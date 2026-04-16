@@ -3,9 +3,17 @@ main = "src/index.ts"
 compatibility_date = "2024-12-30"
 compatibility_flags = ["nodejs_compat"]
 
+# Deployments:
+# - defuddle        : https://defuddle.877781132.workers.dev (main)
+# - defuddle-free   : https://defuddle-free.877781132.workers.dev
+#
+# Deploy commands:
+#   npx wrangler deploy              # deploy to defuddle
+#   npx wrangler deploy --name defuddle-free  # deploy to defuddle-free
+
 [[kv_namespaces]]
 binding = "RATE_LIMIT"
-id = "335cf626a6db4759b12bc6855634f3ce"
+id = "58edd7c3da264badab4bdefbfe4541b0"
 
 [durable_objects]
 bindings = [

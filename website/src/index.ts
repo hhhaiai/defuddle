@@ -8,6 +8,8 @@ import { getPrivacyPage } from './privacy';
 import { getPricingPage } from './pricing';
 import { getSuccessPage } from './success';
 import { convertToHtml, convertToMarkdown, formatResponse, parseHtml } from './convert';
+import { getEditorPage } from './editor';
+import { uploadImageToBaidu } from './image-hosting';
 
 const PRIMARY_HOST = 'defuddle.md';
 const BLOCKED_HOSTS = [PRIMARY_HOST, 'defuddle.dev', 'localhost'];
@@ -508,6 +510,24 @@ async function handleRequest(request: Request, url: URL, path: string, env: Env,
 		return jsonResponse({ received: true });
 	}
 
+	// --- Image upload API ---
+	if (path === '/api/upload-image' && request.method === 'POST') {
+		try {
+			const body = await request.json() as { url?: string };
+			if (!body.url) {
+				return errorResponse('Missing "url" field.', 400);
+			}
+			const result = await uploadImageToBaidu(body.url);
+			if (!result) {
+				return errorResponse('Failed to upload image.', 502);
+			}
+			return jsonResponse(result);
+		} catch (err) {
+			const message = err instanceof Error ? err.message : 'An unexpected error occurred';
+			return errorResponse(message, 500);
+		}
+	}
+
 	// --- URL conversion route (catch-all) ---
 
 	// Unknown API routes should 404, not fall through to URL conversion
@@ -517,6 +537,7 @@ async function handleRequest(request: Request, url: URL, path: string, env: Env,
 
 	// Check for /html/ prefix — returns clean HTML instead of markdown
 	const htmlMode = path.startsWith('/html/');
+	// By default, content URLs show the editor page (unless /html/ prefix)
 	const urlPath = htmlMode ? path.slice(5) : path;
 
 	// Parse target URL from path
@@ -617,8 +638,15 @@ async function handleRequest(request: Request, url: URL, path: string, env: Env,
 		const result = htmlMode
 			? await convertToHtml(targetUrl, language)
 			: await convertToMarkdown(targetUrl, language);
-		const body = htmlMode ? result.content : formatResponse(result, targetUrl);
-		const contentType = htmlMode ? 'text/html; charset=utf-8' : 'text/markdown; charset=utf-8';
+
+		// If not htmlMode, return the editor page (default for content URLs)
+		if (!htmlMode) {
+			const markdown = formatResponse(result, targetUrl);
+			return htmlResponse(getEditorPage(markdown, targetUrl, result.title || ''));
+		}
+
+		const body = result.content;
+		const contentType = 'text/html; charset=utf-8';
 
 		// Cache if there's meaningful text content, or if an extractor ran and got metadata
 		// (e.g. YouTube without transcript — avoids hammering InnerTube on every request)
