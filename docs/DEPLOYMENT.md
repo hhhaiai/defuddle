@@ -4,7 +4,9 @@
 
 这是一个简化版的 Defuddle 服务，部署在 Cloudflare Workers 上，可以将任意网页转换为干净的 Markdown 格式。
 
-**在线演示：** https://defuddle-free.877781132.workers.dev
+**在线演示：**
+- Worker: https://defuddle-free.877781132.workers.dev
+- GitHub Pages: https://hhhaiai.github.io/defuddle/ (自动跳转到 Worker)
 
 ## 功能
 
@@ -13,6 +15,27 @@
 - 支持 YouTube、GitHub、Reddit 等网站专用提取器
 - 无需 API Key，完全免费使用
 - 服务端获取，无 CORS 跨域问题
+
+## 快速使用
+
+### 直接访问
+
+```
+https://defuddle-free.877781132.workers.dev/https://目标URL
+```
+
+### 示例
+
+```bash
+# 转换网页为 Markdown
+curl https://defuddle-free.877781132.workers.dev/https://stephango.com/saw
+
+# 转换 Twitter 帖子
+curl https://defuddle-free.877781132.workers.dev/https://x.com/op7418/status/2044634498432962806
+
+# 获取 HTML 格式
+curl https://defuddle-free.877781132.workers.dev/html/https://example.com/article
+```
 
 ## 部署到自己的 Cloudflare 账户
 
@@ -40,63 +63,27 @@ npx wrangler deploy
 
 部署成功后，会输出 Workers URL，例如：
 ```
-https://defuddle-free.877781132.workers.dev
+https://defuddle-free-xxxx.workers.dev
 ```
 
-## 使用方法
+### 部署到 GitHub Pages
 
-### 基本格式
+GitHub Pages 部署在 `docs/` 目录，会自动跳转到 Cloudflare Worker：
 
-```
-https://你的-worker.workers.dev/https://目标URL
-```
+1. 进入 GitHub 仓库 Settings → Pages
+2. Source 选择 `docs/` 目录
+3. 访问 `https://你的用户名.github.io/defuddle/` 会自动跳转到 Worker
 
-### 示例
+### 自定义域名
 
-```bash
-# 转换网页为 Markdown
-curl https://defuddle-free.877781132.workers.dev/https://stephango.com/saw
-
-# 转换 Twitter 帖子
-curl https://defuddle-free.877781132.workers.dev/https://x.com/op7418/status/2044634498432962806
-
-# 获取 HTML 格式（而非 Markdown）
-curl https://defuddle-free.877781132.workers.dev/html/https://example.com/article
-```
-
-### 在浏览器中使用
-
-直接在浏览器访问上述 URL，会返回转换后的内容。
-
-### Bookmarklet（书签脚本）
-
-将以下代码拖拽到书签栏：
-
-```javascript
-javascript:void(location.href='https://defuddle-free.877781132.workers.dev/'+location.href.replace(/^https?:\/\//,''))
-```
-
-点击书签栏中的链接，会跳转到转换后的页面。
-
-## 自定义域名
-
-### 在 Cloudflare Dashboard 中设置
+如果你有自己的域名（如 `defuddle.yourdomain.com`）：
 
 1. 进入 [Cloudflare Dashboard](https://dash.cloudflare.com)
-2. 选择你的 Worker（`defuddle-free`）
-3. 进入 **Settings** → **Triggers**
-4. 在 **Custom Domains** 部分点击 **Add Custom Domain**
-5. 输入你的域名（如 `defuddle.yourdomain.com`）
+2. 选择你的 Worker → Settings → Triggers
+3. 点击 Add Custom Domain
+4. 输入你的域名
 
-### 使用你自己的 Workers URL
-
-如果使用自己的域名，请更新 `src/index.ts` 中的 `PRIMARY_HOST` 常量：
-
-```typescript
-const PRIMARY_HOST = 'defuddle.yourdomain.com'; // 改成你的域名
-```
-
-重新部署后，bookmarklet 和内部链接会使用新域名。
+**注意**：如果使用 GitHub Pages 自定义域名（如 `simitalk.de5.net`），Worker 的自定义域名需要单独配置，不能共用同一个域名。
 
 ## 工作原理
 
@@ -120,13 +107,6 @@ const PRIMARY_HOST = 'defuddle.yourdomain.com'; // 改成你的域名
 └─────────────────────────────────────┘
 ```
 
-1. 用户请求 `https://worker-url/https://example.com/article`
-2. Worker 解析 URL，从路径中提取目标网址
-3. Worker 使用 `fetch()` 在服务端获取目标网页（无 CORS 限制）
-4. 使用 Defuddle 库提取主要内容
-5. 使用 Turndown 将 HTML 转换为 Markdown
-6. 返回带 YAML frontmatter 的 Markdown
-
 ## 返回格式
 
 ```markdown
@@ -149,70 +129,57 @@ word_count: 1234
 
 ## GitHub Pages 集成
 
-如果你想在 GitHub Pages 上托管一个前端页面，可以通过以下方式集成：
+GitHub Pages (`docs/`) 已配置为自动跳转到 Cloudflare Worker。
 
-### 方式一：使用 Worker URL
+### 架构
 
-在 GitHub Pages 页面中使用 Worker 作为 API：
-
-```javascript
-const API_URL = 'https://defuddle-free.877781132.workers.dev';
-const targetUrl = 'https://example.com/article';
-
-fetch(`${API_URL}/${targetUrl}`)
-  .then(r => r.text())
-  .then(markdown => {
-    console.log(markdown);
-  });
+```
+GitHub Pages (docs/)
+    │
+    ▼ (302 redirect)
+Cloudflare Worker
+    │
+    ▼ (fetch)
+目标网页
+    │
+    ▼
+返回 Markdown
 ```
 
-### 方式二：302 重定向到 Worker
+### 本地开发
 
-如果希望 `https://your-site.github.io/defuddle/` 自动跳转到 Worker，可以使用 meta refresh：
+如果需要在本地开发或修改 GitHub Pages 内容：
 
-在 `docs/index.html` 开头添加：
+```bash
+# 直接用浏览器打开 docs/index.html
+open docs/index.html
 
-```html
-<!-- 3秒后跳转到 Worker -->
-<meta http-equiv="refresh" content="3;url=https://defuddle-free.877781132.workers.dev/">
-```
-
-或在文档根目录创建 `redirect.html`：
-
-```html
-<!DOCTYPE html>
-<html>
-<head>
-  <meta http-equiv="refresh" content="0;url=https://defuddle-free.877781132.workers.dev/">
-</head>
-<body>
-  <p>正在跳转到 Defuddle Worker...</p>
-  <p><a href="https://defuddle-free.877781132.workers.dev/">点击这里</a></p>
-</body>
-</html>
+# 或用任意静态服务器
+npx serve docs/
 ```
 
 ## 目录结构
 
 ```
-website-free/
-├── src/
-│   ├── index.ts          # Worker 主入口
-│   ├── polyfill.ts       # linkedom/Turndown 兼容补丁
-│   ├── defuddle.ts       # 核心解析逻辑
-│   ├── markdown.ts       # HTML→Markdown 转换
-│   ├── fetch.ts          # 网页获取
-│   ├── standardize.ts    # HTML 标准化
-│   ├── constants.ts      # 选择器和配置
-│   ├── types.ts          # TypeScript 类型定义
-│   ├── metadata.ts       # 元数据提取
-│   ├── elements/         # 元素处理（ footnotes, callouts, code, images, math）
-│   ├── extractors/       # 网站专用提取器（github, reddit, youtube, twitter 等）
-│   ├── removals/         # 内容清理（ selectors, hidden, scoring 等）
-│   └── utils/            # 工具函数
-├── wrangler.toml         # Workers 配置
-├── package.json
-└── tsconfig.json
+defuddle/
+├── docs/                      # GitHub Pages (自动跳转 Worker)
+│   ├── index.html            # 跳转到 Worker
+│   ├── redirect.html         # 备用跳转页
+│   └── DEPLOYMENT.md         # 本文档
+│
+├── website-free/              # Cloudflare Worker 源码
+│   ├── src/
+│   │   ├── index.ts         # Worker 主入口
+│   │   ├── polyfill.ts      # linkedom/Turndown 兼容补丁
+│   │   ├── defuddle.ts      # 核心解析逻辑
+│   │   ├── markdown.ts       # HTML→Markdown 转换
+│   │   ├── fetch.ts          # 网页获取
+│   │   └── ...
+│   ├── wrangler.toml         # Workers 配置
+│   └── package.json
+│
+└── src/                      # 浏览器版本库
+    └── ...
 ```
 
 ## 与原版 defuddle.md 的区别
@@ -233,11 +200,14 @@ website-free/
 ### Q: 可以获取 Twitter/X 私信内容吗？
 不能。Twitter 私信需要登录认证，Worker 无法访问。
 
+### Q: GitHub Pages 为什么跳转到 Worker？
+GitHub Pages 无法执行服务端代码，CORS 代理也不稳定。跳转到 Worker 可以确保：
+- 无 CORS 问题
+- 支持所有网站（包括 Twitter）
+- 完整的 Markdown 转换
+
 ### Q: 如何处理需要 JavaScript 渲染的页面？
 Defuddle 主要依赖 Server-Side Rendering（SSR）内容。对于纯客户端渲染的页面，可能无法获取完整内容。
-
-### Q: 请求频率限制？
-Cloudflare Workers 免费版没有明确的频率限制，但建议添加缓存以减少重复请求。
 
 ## 许可证
 

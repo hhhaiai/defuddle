@@ -5,8 +5,8 @@ import { toMarkdown } from './markdown';
 import { countWords } from './utils';
 import type { DefuddleResponse } from './types';
 
-const PRIMARY_HOST = 'defuddle.md';
-const BLOCKED_HOSTS = [PRIMARY_HOST, 'defuddle.dev', 'localhost'];
+const PRIMARY_HOSTS = ['defuddle.md', 'simitalk.de5.net', 'github.io'];
+const BLOCKED_HOSTS = [...PRIMARY_HOSTS, 'defuddle.dev', 'localhost'];
 
 const STATIC_PAGES = new Set(['/', '', '/favicon.ico']);
 const CACHE_TTL = 300; // 5 minutes
@@ -23,7 +23,7 @@ export default {
 			// Redirect defuddle.dev to defuddle.md
 			if (url.hostname.includes('defuddle.dev')) {
 				const redirectUrl = new URL(request.url);
-				redirectUrl.hostname = PRIMARY_HOST;
+				redirectUrl.hostname = 'defuddle.md';
 				return Response.redirect(redirectUrl.toString(), 301);
 			}
 
@@ -418,16 +418,17 @@ function getLandingPage(): string {
 	<div class="bottom">
 		<div class="api-note">
 			<p><strong>API Usage</strong></p>
-			<p><code>curl https://your-worker.workers.dev/stephango.com/saw</code></p>
+			<p><code>curl https://defuddle-free.877781132.workers.dev/stephango.com/saw</code></p>
 			<p>Append any URL path to convert it to Markdown. Use /html/ prefix for HTML output.</p>
 		</div>
 		<div class="api-note" style="margin-top: 1rem;">
 			<p><strong>Bookmarklet</strong></p>
-			<p>Drag this to your bookmarks bar: <a href="javascript:void(location.href='https://your-worker.workers.dev/'+location.href.replace(/^https?:\\/\\//,''))" style="display: inline-block; padding: 0.4rem 0.8rem; background: #343331; color: #F2F0E5; border-radius: 6px; text-decoration: none; font-weight: 500; font-size: 0.85rem; cursor: grab;">Defuddle</a></p>
+			<p>Drag this to your bookmarks bar: <a href="javascript:void(location.href=location.origin+'/'+location.href.replace(/^https?:\\/\\//,''))" style="display: inline-block; padding: 0.4rem 0.8rem; background: #343331; color: #F2F0E5; border-radius: 6px; text-decoration: none; font-weight: 500; font-size: 0.85rem; cursor: grab;">Defuddle</a></p>
 		</div>
 	</div>
 	<footer>
-		Based on <a href="https://github.com/kepano/defuddle">Defuddle</a>
+		Based on <a href="https://github.com/kepano/defuddle">Defuddle</a> ·
+		<a href="https://github.com/hhhaiai/defuddle">Deploy your own</a>
 	</footer>
 	<script>
 		document.getElementById('form').addEventListener('submit', function(e) {

@@ -3,64 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Redirecting to Defuddle...</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: #100F0F;
-      color: #B7B5AC;
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-    .container {
-      text-align: center;
-      padding: 2rem;
-    }
-    h1 {
-      font-size: 1.5rem;
-      color: #F2F0E5;
-      margin-bottom: 1rem;
-    }
-    p {
-      color: #878580;
-      margin-bottom: 1.5rem;
-    }
-    a {
-      color: #2563eb;
-      text-decoration: none;
-    }
-    a:hover {
-      text-decoration: underline;
-    }
-    .spinner {
-      width: 40px;
-      height: 40px;
-      border: 3px solid #343331;
-      border-top-color: #F2F0E5;
-      border-radius: 50%;
-      animation: spin 1s linear infinite;
-      margin: 0 auto 1.5rem;
-    }
-    @keyframes spin {
-      to { transform: rotate(360deg); }
-    }
-  </style>
-  <!-- 3秒后跳转到 Worker -->
-  <meta http-equiv="refresh" content="3;url=https://defuddle-free.877781132.workers.dev/">
+  <title>Defuddle — Redirecting...</title>
+  <!-- Redirect to the Worker -->
+  <meta http-equiv="refresh" content="0;url=https://defuddle-free.877781132.workers.dev/">
 </head>
 <body>
-  <div class="container">
-    <div class="spinner"></div>
-    <h1>Redirecting to Defuddle Worker...</h1>
-    <p>你将被重定向到 Cloudflare Worker 上的 Defuddle 服务</p>
-    <p>如果你没有自动跳转，请 <a href="https://defuddle-free.877781132.workers.dev/">点击这里</a></p>
-  </div>
-  <script>
-    // 立即跳转（可选，取消注释即可启用）
-    // window.location.href = 'https://defuddle-free.877781132.workers.dev/';
-  </script>
+  <p>Redirecting to Defuddle Worker...</p>
+  <p>If not redirected automatically, <a href="https://defuddle-free.877781132.workers.dev/">click here</a></p>
 </body>
 </html>
