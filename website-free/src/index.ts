@@ -26,8 +26,177 @@ type PageMetadata = {
 	domain?: string;
 	language?: string;
 	description?: string;
-	wordCount: number;
+	wordCount?: number;
 };
+
+export type ViewerPageOptions = {
+	baiduUploadEndpoint?: string;
+	retryDelaysMs?: number[];
+};
+
+// --- Baidu image upload (server-side, avoids CORS) ---
+
+const DEFAULT_BAIDU_UPLOAD_ENDPOINT = 'https://image.baidu.com/aigc/pic_upload';
+const DEFAULT_USER_AGENT =
+	'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
+
+// Synchronous true MD5 using pure JS (no crypto API needed)
+function trueMd5(str: string): string {
+	const rotateLeft = (val: number, bits: number) => ((val << bits) | (val >>> (32 - bits))) >>> 0;
+	const add = (x: number, y: number) => {
+		const lsw = (x & 0xffff) + (y & 0xffff);
+		const msw = ((x >>> 16) + (y >>> 16) + (lsw >>> 16)) >>> 0;
+		return (msw << 16) | (lsw & 0xffff);
+	};
+
+	const S = [
+		7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+		5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
+		4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+		6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21
+	];
+	const K = new Uint32Array(64);
+	for (let i = 0; i < 64; i++) {
+		K[i] = Math.floor(Math.abs(Math.sin(i + 1)) * 0x100000000);
+	}
+
+	const msg = new TextEncoder().encode(str);
+	const ml = msg.length;
+	const newLen = Math.ceil((ml + 9) / 64) * 64;
+	const padded = new Uint8Array(newLen);
+	padded.set(msg);
+	padded[ml] = 0x80;
+	const view = new DataView(padded.buffer);
+	view.setUint32(newLen - 4, ml * 8, false);
+
+	let a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
+
+	for (let i = 0; i < newLen / 64; i++) {
+		const M = new Uint32Array(16);
+		for (let j = 0; j < 16; j++) {
+			M[j] = view.getUint32((i * 64 + j * 4), false);
+		}
+
+		let A = a0, B = b0, C = c0, D = d0;
+		for (let j = 0; j < 64; j++) {
+			let F, g;
+			if (j < 16) {
+				F = (B & C) | (~B & D);
+				g = j;
+			} else if (j < 32) {
+				F = (D & B) | (~D & C);
+				g = (5 * j + 1) % 16;
+			} else if (j < 48) {
+				F = B ^ C ^ D;
+				g = (3 * j + 5) % 16;
+			} else {
+				F = C ^ (B | ~D);
+				g = (7 * j) % 16;
+			}
+			const temp = rotateLeft((A + F + K[j] + M[g]) >>> 0, S[j]);
+			A = D;
+			D = C;
+			C = B;
+			B = (B + temp) >>> 0;
+		}
+		a0 = (a0 + A) >>> 0;
+		b0 = (b0 + B) >>> 0;
+		c0 = (c0 + C) >>> 0;
+		d0 = (d0 + D) >>> 0;
+	}
+
+	const toHex = (n: number) => {
+		const hex = n.toString(16);
+		return hex.length === 8 ? hex : '0' + hex;
+	};
+	return toHex(a0) + toHex(b0) + toHex(c0) + toHex(d0);
+}
+
+function generateToken(picInfo: string, timestamp: string): string {
+	const first = trueMd5(picInfo);
+	const combined = first + 'pic_edit' + timestamp;
+	return trueMd5(combined).slice(0, 5);
+}
+
+function guessMimeTypeFromUrl(imageUrl: string): string {
+	try {
+		const pathname = new URL(imageUrl).pathname.toLowerCase();
+		if (pathname.endsWith('.png')) return 'image/png';
+		if (pathname.endsWith('.gif')) return 'image/gif';
+		if (pathname.endsWith('.webp')) return 'image/webp';
+		if (pathname.endsWith('.svg')) return 'image/svg+xml';
+		if (pathname.endsWith('.bmp')) return 'image/bmp';
+		return 'image/jpeg';
+	} catch {
+		return 'image/jpeg';
+	}
+}
+
+async function uploadImageUrlToBaidu(imageUrl: string, env: Env): Promise<string | null> {
+	try {
+		const imageResponse = await fetch(imageUrl, {
+			headers: {
+				'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+				'User-Agent': DEFAULT_USER_AGENT,
+			},
+			signal: AbortSignal.timeout(30000),
+		});
+		if (!imageResponse.ok) {
+			throw new Error(`Failed to fetch image: ${imageResponse.status}`);
+		}
+
+		const contentType = imageResponse.headers.get('content-type')?.split(';')[0]?.trim() || guessMimeTypeFromUrl(imageUrl);
+		const imageBuffer = await imageResponse.arrayBuffer();
+		const base64String = Buffer.from(imageBuffer).toString('base64');
+		const picInfo = `data:${contentType};base64,${base64String}`;
+		const timestamp = String(Date.now());
+		const token = generateToken(picInfo, timestamp);
+		const uploadEndpoint = env.BAIDU_UPLOAD_ENDPOINT || DEFAULT_BAIDU_UPLOAD_ENDPOINT;
+
+		const payload = new URLSearchParams({
+			token,
+			scene: 'pic_edit',
+			picInfo,
+			timestamp,
+		});
+
+		const uploadResponse = await fetch(uploadEndpoint, {
+			method: 'POST',
+			headers: {
+				'Accept': '*/*',
+				'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+				'Cache-Control': 'no-cache',
+				'Connection': 'keep-alive',
+				'Origin': 'https://image.baidu.com',
+				'Pragma': 'no-cache',
+				'Referer': 'https://image.baidu.com/',
+				'Sec-Fetch-Dest': 'empty',
+				'Sec-Fetch-Mode': 'cors',
+				'Sec-Fetch-Site': 'same-origin',
+				'User-Agent': DEFAULT_USER_AGENT,
+				'sec-ch-ua': '"Chromium";v="140", "Not=A?Brand";v="24", "Google Chrome";v="140"',
+				'sec-ch-ua-mobile': '?0',
+				'sec-ch-ua-platform': '"Windows"',
+				'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+			},
+			body: payload.toString(),
+			signal: AbortSignal.timeout(30000),
+		});
+		if (!uploadResponse.ok) {
+			throw new Error(`Baidu upload failed: ${uploadResponse.status}`);
+		}
+
+		const result = await uploadResponse.json() as { data?: { url?: string } };
+		const baiduUrl = result?.data?.url;
+		if (!baiduUrl) {
+			throw new Error(`Unexpected Baidu upload response: ${JSON.stringify(result)}`);
+		}
+		return baiduUrl;
+	} catch (error) {
+		console.error('Baidu upload error:', error);
+		return null;
+	}
+}
 
 export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -138,6 +307,24 @@ async function handleRequest(request: Request, url: URL, env: Env, ctx: Executio
 		return htmlResponse(getLandingPage());
 	}
 
+	// --- Image upload proxy (avoids CORS) ---
+	if (path === '/api/upload-image' && request.method === 'POST') {
+		try {
+			const body = await request.json() as { url?: string };
+			if (!body.url) {
+				return errorResponse('Missing "url" field.', 400);
+			}
+			const baiduUrl = await uploadImageUrlToBaidu(body.url, env);
+			if (!baiduUrl) {
+				return errorResponse('Failed to upload image.', 502);
+			}
+			return jsonResponse({ url: baiduUrl });
+		} catch (err) {
+			const message = err instanceof Error ? err.message : 'An unexpected error occurred';
+			return errorResponse(message, 500);
+		}
+	}
+
 	// Unknown API routes should 404
 	if (path.startsWith('/api/')) {
 		return errorResponse('Not found.', 404);
@@ -217,7 +404,9 @@ async function handleRequest(request: Request, url: URL, env: Env, ctx: Executio
 		// Return HTML viewer for browsers (unless ?raw=1 is specified)
 		if (wantsHtmlViewer && !forceRaw && !htmlMode) {
 			const markdown = formatResponse(result, targetUrl);
-			const body = getMarkdownViewerPage(markdown, metadata);
+			const body = getMarkdownViewerPage(markdown, metadata, {
+				baiduUploadEndpoint: env.BAIDU_UPLOAD_ENDPOINT,
+			});
 			const response = new Response(body, {
 				headers: {
 					'Content-Type': 'text/html; charset=utf-8',
@@ -526,8 +715,10 @@ function getLandingPage(): string {
 
 // --- Markdown Viewer Page ---
 
-function getMarkdownViewerPage(markdown: string, metadata: PageMetadata): string {
+export function getMarkdownViewerPage(markdown: string, metadata: PageMetadata, options: ViewerPageOptions = {}): string {
 	const title = metadata.title || metadata.domain || 'Document';
+	const baiduUploadEndpoint = options.baiduUploadEndpoint || 'https://image.baidu.com/aigc/pic_upload';
+	const retryDelaysMs = options.retryDelaysMs || [1500, 5000, 15000];
 
 	return `<!DOCTYPE html>
 <html lang="${metadata.language || 'en'}">
@@ -749,10 +940,11 @@ function getMarkdownViewerPage(markdown: string, metadata: PageMetadata): string
 			<div class="pane-header">
 				<span class="pane-header-title">Markdown</span>
 				<div class="pane-actions">
+					<span id="upload-status" style="font-size:11px;color:#64748b;"></span>
 					<button id="copy-markdown-btn" class="pane-btn" type="button" onclick="copyMarkdown(event)" title="Copy markdown to clipboard">复制</button>
 				</div>
 			</div>
-			<textarea id="md-input" readonly spellcheck="false" autocomplete="off" autocapitalize="off">${escapeHtml(markdown)}</textarea>
+			<textarea id="md-input" spellcheck="false" autocomplete="off" autocapitalize="off">${escapeHtml(markdown)}</textarea>
 		</section>
 		<section class="preview-pane">
 			<div class="pane-header">
@@ -782,14 +974,36 @@ function getMarkdownViewerPage(markdown: string, metadata: PageMetadata): string
 			setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
 		};
 		const mdInput = document.getElementById('md-input');
-		const rawMarkdown = mdInput.value;
+		const uploadStatus = document.getElementById('upload-status');
+		const sourceUrl = ${JSON.stringify(metadata.source)};
+		const baiduUploadEndpoint = ${JSON.stringify(baiduUploadEndpoint)};
+		const retryDelaysMs = ${JSON.stringify(retryDelaysMs)};
+		const uploadTasks = new Map();
+		let renderTimer = null;
+		let uploadScanTimer = null;
 
 		function escapeHtml(str) {
 			return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 		}
 
+		function getCurrentMarkdown() {
+			return mdInput.value;
+		}
+
+		function setCurrentMarkdown(nextMarkdown) {
+			if (typeof nextMarkdown !== 'string' || nextMarkdown === mdInput.value) return;
+			const selectionStart = mdInput.selectionStart;
+			const selectionEnd = mdInput.selectionEnd;
+			mdInput.value = nextMarkdown;
+			if (document.activeElement === mdInput && Number.isInteger(selectionStart) && Number.isInteger(selectionEnd)) {
+				const nextStart = Math.min(selectionStart, mdInput.value.length);
+				const nextEnd = Math.min(selectionEnd, mdInput.value.length);
+				mdInput.setSelectionRange(nextStart, nextEnd);
+			}
+		}
+
 		function getDownloadBaseName() {
-			const match = rawMarkdown.match(/^title:\\s*"?(.+?)"?$/m);
+			const match = getCurrentMarkdown().match(/^title:\\s*"?(.+?)"?$/m);
 			const fallback = ${JSON.stringify(title)};
 			return (match ? match[1] : fallback).replace(/[^a-z0-9\\u4e00-\\u9fa5\\s\\-_.]/gi, '_').trim() || 'document';
 		}
@@ -802,7 +1016,33 @@ function getMarkdownViewerPage(markdown: string, metadata: PageMetadata): string
 			setTimeout(() => {
 				button.textContent = originalText;
 				button.disabled = false;
-			}, 1200);
+				}, 1200);
+		}
+
+		function updateUploadStatus() {
+			if (!uploadStatus) return;
+			let uploading = 0;
+			let retrying = 0;
+			let completed = 0;
+			for (const task of uploadTasks.values()) {
+				if (task.status === 'uploading') uploading++;
+				if (task.status === 'retrying') retrying++;
+				if (task.status === 'done') completed++;
+			}
+
+			if (uploading > 0) {
+				uploadStatus.textContent = completed > 0 ? \`上传中 · 已替换 \${completed} 张\` : '上传图片中...';
+				return;
+			}
+			if (retrying > 0) {
+				uploadStatus.textContent = completed > 0 ? \`已替换 \${completed} 张，失败项重试中\` : '图片上传重试中...';
+				return;
+			}
+			uploadStatus.textContent = completed > 0 ? \`已替换 \${completed} 张图\` : '';
+		}
+
+		function stripFrontmatter(markdown) {
+			return markdown.replace(/^---\\n[\\s\\S]*?\\n---\\n*/, '');
 		}
 
 		function renderMarkdown() {
@@ -812,7 +1052,7 @@ function getMarkdownViewerPage(markdown: string, metadata: PageMetadata): string
 				return;
 			}
 			try {
-				const bodyMarkdown = rawMarkdown.replace(/^---\n[\s\S]*?\n---\n*/,'');
+				const bodyMarkdown = stripFrontmatter(getCurrentMarkdown());
 				const md = window.markdownit({
 					html: true,
 					linkify: true,
@@ -834,9 +1074,176 @@ function getMarkdownViewerPage(markdown: string, metadata: PageMetadata): string
 			}
 		}
 
+		function escapeRegExp(value) {
+			return String(value).replace(/[.*+?^$(){}|[\\]\\\\]/g, '\\\\$&');
+		}
+
+		function guessMimeTypeFromUrl(imageUrl) {
+			try {
+				const pathname = new URL(imageUrl).pathname.toLowerCase();
+				if (pathname.endsWith('.png')) return 'image/png';
+				if (pathname.endsWith('.gif')) return 'image/gif';
+				if (pathname.endsWith('.webp')) return 'image/webp';
+				if (pathname.endsWith('.svg')) return 'image/svg+xml';
+				if (pathname.endsWith('.bmp')) return 'image/bmp';
+				return 'image/jpeg';
+			} catch {
+				return 'image/jpeg';
+			}
+		}
+
+		function shouldUploadImage(imageUrl) {
+			try {
+				const parsed = new URL(imageUrl);
+				if (!['http:', 'https:'].includes(parsed.protocol)) return false;
+				if (parsed.hostname.includes('baidu.com') || parsed.hostname.includes('bcebos.com')) return false;
+				return true;
+			} catch {
+				return false;
+			}
+		}
+
+		function extractMarkdownImageCandidates(markdown) {
+			const candidates = new Map();
+			const remember = (rawUrl) => {
+				if (!rawUrl) return;
+				const candidate = String(rawUrl).trim();
+				if (!candidate) return;
+				let resolved = candidate;
+				try {
+					resolved = new URL(candidate, sourceUrl).toString();
+				} catch {
+					return;
+				}
+				if (!shouldUploadImage(resolved)) return;
+				if (!candidates.has(candidate)) candidates.set(candidate, resolved);
+			};
+
+			for (const match of markdown.matchAll(/!\\[[^\\]]*\\]\\(([^)\\s]+)(?:\\s+["'][^"']*["'])?\\)/g)) {
+				remember(match[1]);
+			}
+			for (const match of markdown.matchAll(/\\b(?:src|poster)=["']([^"']+)["']/g)) {
+				remember(match[1]);
+			}
+			return candidates;
+		}
+
+		async function md5(str) {
+			const msg = new TextEncoder().encode(str);
+			const ml = msg.length;
+			const newLen = Math.ceil((ml + 9) / 64) * 64;
+			const padded = new Uint8Array(newLen);
+			padded.set(msg);
+			padded[ml] = 0x80;
+			const view = new DataView(padded.buffer);
+			view.setUint32(newLen - 4, ml * 8, false);
+
+			const S = [7,12,17,22,7,12,17,22,7,12,17,22,7,12,17,22,5,9,14,20,5,9,14,20,5,9,14,20,5,9,14,20,4,11,16,23,4,11,16,23,4,11,16,23,4,11,16,23,6,10,15,21,6,10,15,21,6,10,15,21,6,10,15,21];
+			const K = new Uint32Array(64);
+			for (let i = 0; i < 64; i++) K[i] = Math.floor(Math.abs(Math.sin(i + 1)) * 0x100000000);
+
+			let a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
+
+			for (let i = 0; i < newLen / 64; i++) {
+				const M = new Uint32Array(16);
+				for (let j = 0; j < 16; j++) M[j] = view.getUint32((i * 64 + j * 4), false);
+				let A = a0, B = b0, C = c0, D = d0;
+				for (let j = 0; j < 64; j++) {
+					let F, g;
+					if (j < 16) { F = (B & C) | (~B & D); g = j; }
+					else if (j < 32) { F = (D & B) | (~D & C); g = (5 * j + 1) % 16; }
+					else if (j < 48) { F = B ^ C ^ D; g = (3 * j + 5) % 16; }
+					else { F = C ^ (B | ~D); g = (7 * j) % 16; }
+					const temp = ((A + F + K[j] + M[g]) << S[j]) | ((A + F + K[j] + M[g]) >>> (32 - S[j]));
+					A = D; D = C; C = B; B = (B + temp) >>> 0;
+				}
+				a0 = (a0 + A) >>> 0; b0 = (b0 + B) >>> 0; c0 = (c0 + C) >>> 0; d0 = (d0 + D) >>> 0;
+			}
+
+			return [a0, b0, c0, d0].map((value) => value.toString(16).padStart(8, '0')).join('');
+		}
+
+		async function uploadImageToBaidu(imageUrl) {
+			try {
+				// Call Worker API endpoint instead of Baidu directly (avoids CORS)
+				const response = await fetch('/api/upload-image', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ url: imageUrl }),
+					signal: AbortSignal.timeout(60000),
+				});
+				if (!response.ok) throw new Error('Upload failed: ' + response.status);
+				const result = await response.json();
+				return result?.url || null;
+			} catch (error) {
+				console.warn('Baidu image upload failed:', imageUrl, error);
+				return null;
+			}
+		}
+
+		function replaceMarkdownImageUrl(originalUrl, newUrl) {
+			const current = getCurrentMarkdown();
+			if (!current.includes(originalUrl)) return;
+			setCurrentMarkdown(current.replace(new RegExp(escapeRegExp(originalUrl), 'g'), newUrl));
+			renderMarkdown();
+		}
+
+		function queueRetry(candidate, resolvedUrl, attempt) {
+			const delay = retryDelaysMs[attempt];
+			if (delay == null) {
+				uploadTasks.set(candidate, { status: 'failed', attempt });
+				updateUploadStatus();
+				return;
+			}
+			uploadTasks.set(candidate, { status: 'retrying', attempt });
+			updateUploadStatus();
+			setTimeout(() => {
+				startUpload(candidate, resolvedUrl, attempt + 1);
+			}, delay);
+		}
+
+		async function startUpload(candidate, resolvedUrl, attempt = 0) {
+			const existingTask = uploadTasks.get(candidate);
+			if (existingTask?.status === 'uploading' || existingTask?.status === 'done') return;
+
+			uploadTasks.set(candidate, { status: 'uploading', attempt });
+			updateUploadStatus();
+
+			const baiduUrl = await uploadImageToBaidu(resolvedUrl);
+			if (!baiduUrl) {
+				queueRetry(candidate, resolvedUrl, attempt);
+				return;
+			}
+
+			uploadTasks.set(candidate, { status: 'done', attempt, baiduUrl });
+			replaceMarkdownImageUrl(candidate, baiduUrl);
+			updateUploadStatus();
+		}
+
+		function scanAndStartUploads() {
+			const candidates = extractMarkdownImageCandidates(getCurrentMarkdown());
+			for (const [candidate, resolvedUrl] of candidates.entries()) {
+				const existingTask = uploadTasks.get(candidate);
+				if (existingTask?.status === 'uploading' || existingTask?.status === 'retrying' || existingTask?.status === 'done') {
+					continue;
+				}
+				startUpload(candidate, resolvedUrl, existingTask?.attempt || 0);
+			}
+			updateUploadStatus();
+		}
+
+		function scheduleRender() {
+			clearTimeout(renderTimer);
+			renderTimer = setTimeout(() => renderMarkdown(), 150);
+			clearTimeout(uploadScanTimer);
+			uploadScanTimer = setTimeout(() => scanAndStartUploads(), 600);
+		}
+
+		mdInput.addEventListener('input', scheduleRender);
+
 		async function copyMarkdown(event) {
 			try {
-				await navigator.clipboard.writeText(rawMarkdown);
+				await navigator.clipboard.writeText(getCurrentMarkdown());
 				setButtonFeedback(event?.currentTarget || event?.target, '已复制');
 			} catch (e) {
 				alert('Failed to copy: ' + e.message);
@@ -882,8 +1289,8 @@ function getMarkdownViewerPage(markdown: string, metadata: PageMetadata): string
 
 		function splitTextToRuns(text, options = {}, docx) {
 			const { TextRun } = docx;
-			const normalized = String(text || '').replace(/\r\n/g, '\n');
-			const lines = normalized.split('\n');
+			const normalized = String(text || '').replace(/\\r\\n/g, '\\n');
+			const lines = normalized.split('\\n');
 			const runs = [];
 			lines.forEach((line, idx) => {
 				runs.push(new TextRun({ text: line, ...options }));
@@ -976,7 +1383,7 @@ function getMarkdownViewerPage(markdown: string, metadata: PageMetadata): string
 				const children = Array.from(container.childNodes || []);
 				for (const node of children) {
 					if (node.nodeType === Node.TEXT_NODE) {
-						const text = (node.textContent || '').replace(/\s+/g, ' ').trim();
+						const text = (node.textContent || '').replace(/\\s+/g, ' ').trim();
 						if (text) blocks.push(new Paragraph({ alignment: AlignmentType.LEFT, children: [new TextRun({ text })], spacing: { after: 120 } }));
 						continue;
 					}
@@ -1008,7 +1415,7 @@ function getMarkdownViewerPage(markdown: string, metadata: PageMetadata): string
 					}
 
 					if (tag === 'PRE') {
-						const code = (node.innerText || node.textContent || '').replace(/^\n+|\n+$/g, '');
+						const code = (node.innerText || node.textContent || '').replace(/^\\n+|\\n+$/g, '');
 						if (code) {
 							blocks.push(new Table({
 								width: { size: 100, type: WidthType.PERCENTAGE },
@@ -1136,7 +1543,7 @@ function getMarkdownViewerPage(markdown: string, metadata: PageMetadata): string
 				clone.querySelectorAll('svg').forEach((el) => el.remove());
 				const blocks = await htmlElementToDocxBlocks(clone, docx);
 				if (!blocks.length) {
-					blocks.push(new docx.Paragraph({ text: rawMarkdown || fileBaseName }));
+					blocks.push(new docx.Paragraph({ text: getCurrentMarkdown() || fileBaseName }));
 				}
 				const doc = new docx.Document({
 					sections: [{ properties: {}, children: blocks }]
@@ -1150,7 +1557,8 @@ function getMarkdownViewerPage(markdown: string, metadata: PageMetadata): string
 			}
 		}
 
-		document.addEventListener('DOMContentLoaded', renderMarkdown);
+		renderMarkdown();
+		scanAndStartUploads();
 	</script>
 </body>
 </html>`;
