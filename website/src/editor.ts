@@ -276,12 +276,25 @@ export function getEditorPage(markdown: string, sourceUrl: string, title: string
 
     async function copyMarkdown() {
       const btn = document.getElementById('btn-copy');
+      const originalText = btn.textContent;
       try {
+        btn.disabled = true;
+        btn.textContent = '上传图片中...';
+
+        // Upload images to Baidu first
+        await uploadAllImages();
+
+        // Re-render to get updated content
+        render();
+        await new Promise(r => setTimeout(r, 100));
+
         await navigator.clipboard.writeText(code.value);
         btn.textContent = '已复制!';
         setTimeout(() => btn.textContent = '复制 Markdown', 1500);
       } catch (e) {
         showToast('复制失败: ' + e.message);
+      } finally {
+        btn.disabled = false;
       }
     }
 
@@ -292,9 +305,14 @@ export function getEditorPage(markdown: string, sourceUrl: string, title: string
         if (!imgResponse.ok) throw new Error('Failed to fetch image');
         const blob = await imgResponse.blob();
 
-        // Convert to base64
+        // Convert to base64 (binary string approach for safe btoa)
         const arrayBuffer = await blob.arrayBuffer();
-        const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+        const bytes = new Uint8Array(arrayBuffer);
+        let binary = '';
+        for (let i = 0; i < bytes.length; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        const base64 = btoa(binary);
         const contentType = imgResponse.headers.get('content-type') || 'image/jpeg';
         const picInfo = 'data:' + contentType + ';base64,' + base64;
 
@@ -305,20 +323,18 @@ export function getEditorPage(markdown: string, sourceUrl: string, title: string
         const md5_2 = await md5(combined);
         const token = md5_2.slice(0, 5);
 
-        // Upload to Baidu
-        const formData = new FormData();
-        formData.append('token', token);
-        formData.append('scene', 'pic_edit');
-        formData.append('picInfo', picInfo);
-        formData.append('timestamp', timestamp);
-
+        // Upload to Baidu with exact same format as shell script
         const uploadResponse = await fetch('https://image.baidu.com/aigc/pic_upload', {
           method: 'POST',
           headers: {
+            'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
             'Origin': 'https://image.baidu.com',
             'Referer': 'https://image.baidu.com/'
           },
-          body: formData
+          body: 'token=' + encodeURIComponent(token) +
+                '&scene=' + encodeURIComponent('pic_edit') +
+                '&picInfo=' + encodeURIComponent(picInfo) +
+                '&timestamp=' + encodeURIComponent(timestamp)
         });
 
         if (!uploadResponse.ok) throw new Error('Upload failed');

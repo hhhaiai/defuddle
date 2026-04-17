@@ -5,6 +5,7 @@ import { toMarkdown } from './markdown';
 import { countWords } from './utils';
 import type { DefuddleResponse } from './types';
 import { rewriteHtmlImagesToBaidu, rewriteImageUrlToBaidu, rewriteMarkdownAssetUrlsToBaidu } from './image-hosting';
+import { createHash } from 'node:crypto';
 
 const PRIMARY_HOSTS = ['defuddle.md', 'simitalk.de5.net', 'github.io'];
 const BLOCKED_HOSTS = [...PRIMARY_HOSTS, 'defuddle.dev', 'localhost'];
@@ -40,82 +41,12 @@ const DEFAULT_BAIDU_UPLOAD_ENDPOINT = 'https://image.baidu.com/aigc/pic_upload';
 const DEFAULT_USER_AGENT =
 	'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
 
-// Synchronous true MD5 using pure JS (no crypto API needed)
-function trueMd5(str: string): string {
-	const rotateLeft = (val: number, bits: number) => ((val << bits) | (val >>> (32 - bits))) >>> 0;
-	const add = (x: number, y: number) => {
-		const lsw = (x & 0xffff) + (y & 0xffff);
-		const msw = ((x >>> 16) + (y >>> 16) + (lsw >>> 16)) >>> 0;
-		return (msw << 16) | (lsw & 0xffff);
-	};
-
-	const S = [
-		7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
-		5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
-		4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
-		6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21
-	];
-	const K = new Uint32Array(64);
-	for (let i = 0; i < 64; i++) {
-		K[i] = Math.floor(Math.abs(Math.sin(i + 1)) * 0x100000000);
-	}
-
-	const msg = new TextEncoder().encode(str);
-	const ml = msg.length;
-	const newLen = Math.ceil((ml + 9) / 64) * 64;
-	const padded = new Uint8Array(newLen);
-	padded.set(msg);
-	padded[ml] = 0x80;
-	const view = new DataView(padded.buffer);
-	view.setUint32(newLen - 4, ml * 8, false);
-
-	let a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
-
-	for (let i = 0; i < newLen / 64; i++) {
-		const M = new Uint32Array(16);
-		for (let j = 0; j < 16; j++) {
-			M[j] = view.getUint32((i * 64 + j * 4), false);
-		}
-
-		let A = a0, B = b0, C = c0, D = d0;
-		for (let j = 0; j < 64; j++) {
-			let F, g;
-			if (j < 16) {
-				F = (B & C) | (~B & D);
-				g = j;
-			} else if (j < 32) {
-				F = (D & B) | (~D & C);
-				g = (5 * j + 1) % 16;
-			} else if (j < 48) {
-				F = B ^ C ^ D;
-				g = (3 * j + 5) % 16;
-			} else {
-				F = C ^ (B | ~D);
-				g = (7 * j) % 16;
-			}
-			const temp = rotateLeft((A + F + K[j] + M[g]) >>> 0, S[j]);
-			A = D;
-			D = C;
-			C = B;
-			B = (B + temp) >>> 0;
-		}
-		a0 = (a0 + A) >>> 0;
-		b0 = (b0 + B) >>> 0;
-		c0 = (c0 + C) >>> 0;
-		d0 = (d0 + D) >>> 0;
-	}
-
-	const toHex = (n: number) => {
-		const hex = n.toString(16);
-		return hex.length === 8 ? hex : '0' + hex;
-	};
-	return toHex(a0) + toHex(b0) + toHex(c0) + toHex(d0);
-}
+// Use Node.js crypto via nodejs_compat flag
 
 function generateToken(picInfo: string, timestamp: string): string {
-	const first = trueMd5(picInfo);
+	const first = createHash('md5').update(picInfo).digest('hex');
 	const combined = first + 'pic_edit' + timestamp;
-	return trueMd5(combined).slice(0, 5);
+	return createHash('md5').update(combined).digest('hex').slice(0, 5);
 }
 
 function guessMimeTypeFromUrl(imageUrl: string): string {
@@ -308,6 +239,10 @@ async function handleRequest(request: Request, url: URL, env: Env, ctx: Executio
 	}
 
 	// --- Image upload proxy (avoids CORS) ---
+	// TEST endpoint
+	if (path === '/api/test') {
+		return jsonResponse({ ok: true, path });
+	}
 	if (path === '/api/upload-image' && request.method === 'POST') {
 		try {
 			const body = await request.json() as { url?: string };
