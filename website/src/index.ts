@@ -16,6 +16,7 @@ const BLOCKED_HOSTS = [PRIMARY_HOST, 'defuddle.dev', 'localhost'];
 
 const STATIC_PAGES = new Set(['/', '', '/playground', '/docs', '/terms', '/privacy', '/pricing', '/favicon.ico']);
 const CACHE_TTL = 300; // 5 minutes
+const CACHE_VERSION = '2026-06-21-x-article-sync-v1';
 const MONTHLY_RATE_LIMIT = 1000;
 
 const BLOCKS: Record<string, { requests: number; price: number; name: string }> = {
@@ -577,6 +578,7 @@ async function handleRequest(request: Request, url: URL, path: string, env: Env,
 	const cacheUrl = new URL(targetUrl, 'https://defuddle.md');
 	if (htmlMode) cacheUrl.searchParams.set('_fmt', 'html');
 	if (language) cacheUrl.searchParams.set('_lang', language);
+	cacheUrl.searchParams.set('_cv', CACHE_VERSION);
 	const cacheKey = useCache ? new Request(cacheUrl.toString()) : null;
 
 	// Auth: check for API key (header or query param) or fall back to IP rate limit

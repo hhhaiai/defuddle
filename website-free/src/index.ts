@@ -12,7 +12,7 @@ const BLOCKED_HOSTS = [...PRIMARY_HOSTS, 'defuddle.dev', 'localhost'];
 
 const STATIC_PAGES = new Set(['/', '', '/favicon.ico']);
 const CACHE_TTL = 300; // 5 minutes
-const CACHE_VERSION = '2026-04-16-image-rewrite-v4-frontmatter';
+const CACHE_VERSION = '2026-06-21-x-article-sync-v1';
 const RESERVED_QUERY_PARAMS = new Set(['raw', '__cb']);
 
 type Env = {
