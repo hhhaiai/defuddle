@@ -1,5 +1,11 @@
 # Defuddle Worker
 
+[defuddle.md](https://defuddle.md) is a Cloudflare Worker that wraps Defuddle as an HTTP API. Pass any URL as the path and it returns the cleaned content:
+
+```bash
+curl https://defuddle.md/https://example.com/article
+```
+
 ## Deployments
 
 ### Production Workers
@@ -19,7 +25,34 @@ npx wrangler deploy
 npx wrangler deploy --name defuddle-free
 ```
 
-### API Endpoints
+## Running locally
+
+Install [Wrangler](https://developers.cloudflare.com/workers/wrangler/), Cloudflare's CLI for Workers:
+
+```bash
+npm install -g wrangler
+```
+
+Then start the dev server from this directory:
+
+```bash
+cd website
+npx wrangler dev
+```
+
+The Worker imports source from `../src/` directly, so wrangler compiles on the fly. Test it with `curl` (not a browser):
+
+```bash
+curl http://localhost:8788/https://example.com/article
+```
+
+If source changes don't seem to take effect, clear the wrangler cache:
+
+```bash
+rm -rf .wrangler
+```
+
+## API Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -29,7 +62,7 @@ npx wrangler deploy --name defuddle-free
 | `/html/{url}` | GET | 返回纯 HTML（无编辑器） |
 | `/{url}` | GET | 返回编辑器页面（左侧 Markdown，右侧预览） |
 
-### Features
+## Features
 
 - **编辑器界面**：访问内容 URL 时显示双栏编辑器
   - 左侧：Markdown 编辑器 + 字符计数
@@ -40,7 +73,7 @@ npx wrangler deploy --name defuddle-free
   - 图片上传在浏览器端执行（使用用户 IP）
   - 替换 Markdown 中的图片地址为百度图床地址
 
-### Configuration
+## Configuration
 
 - KV Namespace: `RATE_LIMIT`
 - Durable Objects: `ApiKeyBalanceDO`, `CheckoutFulfillmentDO`

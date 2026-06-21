@@ -5,6 +5,7 @@ import { RedditExtractor } from './extractors/reddit';
 import { TwitterExtractor } from './extractors/twitter';
 import { XArticleExtractor } from './extractors/x-article';
 import { YoutubeExtractor } from './extractors/youtube';
+import { BilibiliExtractor } from './extractors/bilibili';
 import { HackerNewsExtractor } from './extractors/hackernews';
 import { ChatGPTExtractor } from './extractors/chatgpt';
 import { ClaudeExtractor } from './extractors/claude';
@@ -17,6 +18,14 @@ import { C2WikiExtractor } from './extractors/c2-wiki';
 import { SubstackExtractor } from './extractors/substack';
 import { NytimesExtractor } from './extractors/nytimes';
 import { WikipediaExtractor } from './extractors/wikipedia';
+import { LinkedInExtractor } from './extractors/linkedin';
+import { ThreadsExtractor } from './extractors/threads';
+import { BlueskyExtractor } from './extractors/bluesky';
+import { DiscourseExtractor } from './extractors/discourse';
+import { MediumExtractor } from './extractors/medium';
+import { LeetCodeExtractor } from './extractors/leetcode';
+import { LwnExtractor } from './extractors/lwn';
+import { MastodonExtractor } from './extractors/mastodon';
 
 type ExtractorConstructor = new (document: Document, url: string, schemaOrgData?: any, options?: ExtractorOptions) => BaseExtractor;
 
@@ -78,6 +87,14 @@ export class ExtractorRegistry {
 
 		this.register({
 			patterns: [
+				'bilibili.com',
+				/www\.bilibili\.com\/video\/BV[0-9A-Za-z]+/,
+			],
+			extractor: BilibiliExtractor
+		});
+
+		this.register({
+			patterns: [
 				'news.ycombinator.com',
 			],
 			extractor: HackerNewsExtractor
@@ -122,6 +139,37 @@ export class ExtractorRegistry {
 
 		this.register({
 			patterns: [
+				'linkedin.com',
+			],
+			extractor: LinkedInExtractor
+		});
+
+		this.register({
+			patterns: [
+				'threads.net',
+				'www.threads.com',
+				'threads.com',
+			],
+			extractor: ThreadsExtractor
+		});
+
+		this.register({
+			patterns: [
+				'bsky.app',
+			],
+			extractor: BlueskyExtractor
+		});
+
+		this.register({
+			patterns: [
+				'medium.com',
+				/\.medium\.com/,
+			],
+			extractor: MediumExtractor
+		});
+
+		this.register({
+			patterns: [
 				'wiki.c2.com',
 			],
 			extractor: C2WikiExtractor
@@ -148,6 +196,30 @@ export class ExtractorRegistry {
 				'wikipedia.org',
 			],
 			extractor: WikipediaExtractor
+		});
+
+		this.register({
+			patterns: [/\/@[^/]+\/\d+/],
+			extractor: MastodonExtractor
+		});
+
+		this.register({
+			patterns: [/\/t\/[^/]+\/\d+/],
+			extractor: DiscourseExtractor
+		});
+
+		this.register({
+			patterns: [
+				'leetcode.com',
+			],
+			extractor: LeetCodeExtractor
+		});
+
+		this.register({
+			patterns: [
+				'lwn.net',
+			],
+			extractor: LwnExtractor
 		});
 
 		this.register({

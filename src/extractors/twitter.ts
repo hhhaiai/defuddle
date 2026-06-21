@@ -1,7 +1,7 @@
 import { BaseExtractor } from './_base';
 import { ExtractorResult } from '../types/extractors';
 import { parseHTML, serializeHTML, escapeHtml } from '../utils/dom';
-import { buildCommentTree, buildContentHtml, type CommentData } from '../utils/comments';
+import { buildCommentTree, buildContentHtml, buildQuotedPost, type CommentData } from '../utils/comments';
 
 export class TwitterExtractor extends BaseExtractor {
 	private mainTweet: Element | null = null;
@@ -13,7 +13,8 @@ export class TwitterExtractor extends BaseExtractor {
 		super(document, url);
 
 		// Get all tweets from the timeline
-		const timeline = document.querySelector('[aria-label="Timeline: Conversation"]');
+		const timeline = Array.from(document.querySelectorAll('[aria-label]'))
+			.find(el => el.querySelector('[data-testid="cellInnerDiv"]') !== null) ?? null;
 		if (!timeline) {
 			// Try to find a single tweet if not in timeline view
 			const singleTweet = document.querySelector('article[data-testid="tweet"]');
@@ -107,9 +108,7 @@ export class TwitterExtractor extends BaseExtractor {
 		const tweetId = this.getTweetId();
 		const tweetAuthor = this.getTweetAuthor();
 		const description = this.createDescription(this.mainTweet);
-		const title = this.threadTweets.length > 0
-			? `Thread by ${tweetAuthor}`
-			: `Post by ${tweetAuthor}`;
+		const title = this.postTitle(tweetAuthor, 'X');
 
 		return {
 			content: contentHtml,
@@ -207,14 +206,14 @@ export class TwitterExtractor extends BaseExtractor {
 
 		const quotedTweet = this.findQuotedTweet(tweet);
 		const images = this.extractImages(tweet, quotedTweet);
-		const quotedContent = quotedTweet ? this.extractQuotedTweet(quotedTweet) : '';
+		const quotedHtml = quotedTweet ? this.extractQuotedTweet(quotedTweet) : '';
 		const cardLink = this.extractCard(tweet);
 
 		let html = '';
 		if (formattedText) html += formattedText;
 		if (images.length) html += `\n${images.join('\n')}`;
 		if (cardLink) html += `\n${cardLink}`;
-		if (quotedContent) html += `\n<blockquote class="quoted-tweet">${quotedContent}</blockquote>`;
+		if (quotedHtml) html += `\n${quotedHtml}`;
 
 		return html;
 	}
@@ -229,16 +228,19 @@ export class TwitterExtractor extends BaseExtractor {
 		const userInfo = this.extractUserInfo(quotedTweet);
 		const images = this.extractImages(quotedTweet, null);
 
-		let html = '';
-		if (userInfo.fullName || userInfo.handle) {
-			html += `<p><strong>${escapeHtml(userInfo.fullName)}</strong> ${escapeHtml(userInfo.handle)}`;
-			if (userInfo.date) html += ` · ${escapeHtml(userInfo.date)}`;
-			html += '</p>';
-		}
-		if (formattedText) html += formattedText;
-		if (images.length) html += `\n${images.join('\n')}`;
+		let content = '';
+		if (formattedText) content += formattedText;
+		if (images.length) content += `\n${images.join('\n')}`;
 
-		return html;
+		const author = userInfo.fullName
+			? `${userInfo.fullName} ${userInfo.handle}`
+			: userInfo.handle;
+
+		return buildQuotedPost({
+			author: author || undefined,
+			date: userInfo.date || undefined,
+			content,
+		});
 	}
 
 	private extractUserInfo(tweet: Element) {

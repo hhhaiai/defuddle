@@ -11,6 +11,9 @@ compatibility_flags = ["nodejs_compat"]
 #   npx wrangler deploy              # deploy to defuddle
 #   npx wrangler deploy --name defuddle-free  # deploy to defuddle-free
 
+[dev]
+port = 8788
+
 [[kv_namespaces]]
 binding = "RATE_LIMIT"
 id = "58edd7c3da264badab4bdefbfe4541b0"

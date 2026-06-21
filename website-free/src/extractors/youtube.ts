@@ -76,7 +76,6 @@ const MOBILE_TRANSCRIPT_SELECTORS: TranscriptSelectors = {
 export class YoutubeExtractor extends BaseExtractor {
 	private videoElement: HTMLVideoElement | null;
 	private inlineJsonCache = new Map<string, any>();
-	protected override schemaOrgData: any;
 
 	constructor(document: Document, url: string, schemaOrgData?: any, options?: ExtractorOptions) {
 		super(document, url, schemaOrgData, options);
@@ -376,6 +375,8 @@ export class YoutubeExtractor extends BaseExtractor {
 		// schemaOrgData (passed in at construction) may be absent or stale after YouTube SPA
 		// navigation because YouTube removes the VideoObject ld+json block on client-side nav.
 		const scripts = Array.from(this.document.querySelectorAll('script[type="application/ld+json"]'));
+		let fallbackVideoObject: any | undefined;
+
 		for (const script of scripts) {
 			try {
 				const data = JSON.parse(script.textContent || '');
@@ -386,16 +387,26 @@ export class YoutubeExtractor extends BaseExtractor {
 					const id: string = item['@id'] || item['url'] || item['embedUrl'] || '';
 					return id.includes(videoId);
 				});
-				if (videoObject) return videoObject;
+				// If the VideoObject contains a "description" property, it is the main video metadata block. Use it directly.
+				// It contains: "@id", "name", "author", "description", "duration", "embedUrl", "uploadDate", "genre", "thumbnailUrl", and "interactionStatistic" properties.
+				if (videoObject && videoObject.description) return videoObject;
+				// If the VideoObject contains a "comment" property, it contains data related to the first comment rendered on the page.
+				// It also contains: "@id", "name", "thumbnailUrl", and "uploadDate" properties of the video.
+				// Use it as a fallback if can't find a better match.
+				if (videoObject && (videoObject.comment || !fallbackVideoObject)) fallbackVideoObject = videoObject;
+
 			} catch {
 				// ignore invalid JSON
 			}
 		}
+		
+		// If we found a VideoObject with comments but no description, return it as a fallback to at least get the title and thumbnail.
+		if (fallbackVideoObject) return fallbackVideoObject;
 
-		// Fall back to og:* meta tags. YouTube updates these after SPA navigation,
-		// so they reliably reflect the current video.
+		// Fall back to og:* meta tags. YouTube usually does not update these after SPA navigation.
 		if (videoId) {
 			const ogUrl = this.document.querySelector('meta[property="og:url"]')?.getAttribute('content') || '';
+			// Validate that the og:url corresponds to the current video ID to avoid using stale metadata after SPA navigation.
 			if (ogUrl.includes(videoId)) {
 				return {
 					name: this.document.querySelector('meta[property="og:title"]')?.getAttribute('content') || '',

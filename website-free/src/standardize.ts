@@ -20,7 +20,7 @@ import { wrapRawLatexDelimiters, extractLatexFromImageSrc, LOOKS_LIKE_LATEX_RE }
 import { codeBlockRules } from './elements/code';
 import { headingRules, removePermalinkAnchors, isPermalinkAnchor } from './elements/headings';
 import { imageRules } from './elements/images';
-import { isElement, isTextNode, isCommentNode, isSVGElement, getComputedStyle, logDebug } from './utils';
+import { isElement, isTextNode, isCommentNode, isSVGElement, getComputedStyle, logDebug, normalizeText } from './utils';
 import { transferContent, isDirectTableChild, getClassName } from './utils/dom';
 
 // Module-level debug flag, set by standardizeContent for child functions
@@ -164,6 +164,7 @@ export function standardizeContent(element: Element, metadata: DefuddleMetadata,
 		}
 		: <T>(_: string, fn: () => T): T => fn();
 
+	step('standardizeDropCaps', () => standardizeDropCaps(element));
 	step('standardizeSpaces', () => standardizeSpaces(element));
 	step('removeHtmlComments', () => removeHtmlComments(element));
 	step('standardizeHeadings', () => standardizeHeadings(element, metadata.title, doc));
@@ -175,6 +176,7 @@ export function standardizeContent(element: Element, metadata: DefuddleMetadata,
 		step('replaceCustomElements', () => replaceCustomElements(element, doc));
 		step('convertDataAsSpans', () => convertDataAsSpans(element, doc));
 		step('convertBlockSpans', () => convertBlockSpans(element, doc));
+		step('unwrapLayoutTables', () => unwrapLayoutTables(element));
 		step('flattenWrapperElements[1]', () => flattenWrapperElements(element, doc));
 		step('removePermalinkAnchors', () => removePermalinkAnchors(element));
 		step('stripUnwantedAttributes', () => stripUnwantedAttributes(element, debug));
@@ -380,14 +382,6 @@ export function removeOrphanedDividers(element: Element): void {
 }
 
 function standardizeHeadings(element: Element, title: string, doc: Document): void {
-	const normalizeText = (text: string): string => {
-		return text
-			.replace(/\u00A0/g, ' ') // Convert non-breaking spaces to regular spaces
-			.replace(/\s+/g, ' ') // Normalize all whitespace to single spaces
-			.trim()
-			.toLowerCase();
-	};
-
 	const h1s = element.getElementsByTagName('h1');
 
 	Array.from(h1s).forEach(h1 => {
@@ -507,6 +501,42 @@ function unwrapElement(el: Element): void {
 	el.remove();
 }
 
+/**
+ * Replace layout-only tables with their content. After selector removal,
+ * some tables end up with only one non-empty cell (e.g. a TOC cell was
+ * emptied). If that cell holds a single block element, the table is just
+ * a layout wrapper and should be unwrapped.
+ */
+function unwrapLayoutTables(element: Element): void {
+	const tables = Array.from(element.querySelectorAll('table'));
+	let count = 0;
+
+	for (const table of tables) {
+		if (!table.parentNode) continue;
+
+		// Skip data tables with explicit structure hints
+		if (table.querySelector('thead, tfoot, th, caption')) continue;
+
+		// Only check direct cells to avoid matching nested tables
+		const cells = Array.from(table.querySelectorAll(':scope > tbody > tr > td, :scope > tr > td'));
+		const nonEmptyCells = cells.filter(td => td.textContent?.trim());
+
+		if (nonEmptyCells.length !== 1) continue;
+
+		const cell = nonEmptyCells[0];
+		const children = Array.from(cell.children).filter(
+			c => c.textContent?.trim()
+		);
+
+		if (children.length === 1 && BLOCK_LEVEL_ELEMENTS.has(children[0].tagName.toLowerCase())) {
+			table.replaceWith(children[0]);
+			count++;
+		}
+	}
+
+	logDebug(_debug, 'Unwrapped layout tables:', count);
+}
+
 const TW_BLOCK_RE = /(?:^|\s)block(?:\s|$)/;
 const DISPLAY_BLOCK_RE = /display\s*:\s*block/i;
 
@@ -535,6 +565,36 @@ function replaceCustomElements(element: Element, doc: Document): void {
 }
 
 const DATA_AS_ALLOWED = new Set(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'blockquote']);
+
+/**
+ * Merge drop cap elements into their surrounding text.
+ * Sites like The Economist use <span data-caps="initial">T</span><small>HE REST</small>
+ * which produces "T HE REST" as text. This merges them into "THE REST".
+ */
+function standardizeDropCaps(element: Element): void {
+	const caps = Array.from(element.querySelectorAll('span[data-caps="initial"]'));
+	let count = 0;
+
+	for (const span of caps) {
+		if (!span.parentNode) continue;
+		const next = span.nextElementSibling;
+
+		if (next && next.tagName === 'SMALL') {
+			const initial = span.textContent || '';
+			const rest = next.textContent || '';
+			const merged = span.ownerDocument.createTextNode(initial + rest);
+			span.parentNode.insertBefore(merged, span);
+			next.remove();
+			span.remove();
+		} else {
+			unwrapElement(span);
+		}
+		count++;
+	}
+
+	if (count > 0) element.normalize();
+	logDebug(_debug, 'Standardized drop caps:', count);
+}
 
 /**
  * Convert <span data-as="<tag>"> to a real element of that tag.
@@ -961,7 +1021,7 @@ function stripExtraBrElements(element: Element): void {
 			const prevIsBlock = prev && isElement(prev) && BLOCK_LEVEL_ELEMENTS.has(prev.tagName.toLowerCase());
 			const nextIsBlock = next && isElement(next) && BLOCK_LEVEL_ELEMENTS.has(next.tagName.toLowerCase());
 
-			if ((prevIsBlock && nextIsBlock) || (prevIsBlock && !next) || (!prev && nextIsBlock)) {
+			if ((prevIsBlock && nextIsBlock) || (prevIsBlock && !next) || !prev) {
 				for (const b of group) {
 					b.remove();
 					processedCount++;

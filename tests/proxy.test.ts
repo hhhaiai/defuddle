@@ -59,33 +59,33 @@ describe('getProxyUrl — env-var precedence', () => {
 	});
 
 	test('HTTPS_PROXY used for https URLs', async () => {
-		vi.stubEnv('HTTPS_PROXY', 'http://proxy.example.com:8080');
+		vi.stubEnv('HTTPS_PROXY', 'http://127.0.0.1:9');
 		// proxy path will fail to connect — just check fetch was NOT called
 		await expect(fetchPage('https://example.com', DEFAULT_UA)).rejects.toThrow();
 		expectFetchNotCalled();
 	});
 
 	test('HTTP_PROXY used for http URLs', async () => {
-		vi.stubEnv('HTTP_PROXY', 'http://proxy.example.com:8080');
+		vi.stubEnv('HTTP_PROXY', 'http://127.0.0.1:9');
 		await expect(fetchPage('http://example.com', DEFAULT_UA)).rejects.toThrow();
 		expectFetchNotCalled();
 	});
 
 	test('ALL_PROXY used as fallback', async () => {
-		vi.stubEnv('ALL_PROXY', 'http://proxy.example.com:8080');
+		vi.stubEnv('ALL_PROXY', 'http://127.0.0.1:9');
 		await expect(fetchPage('https://example.com', DEFAULT_UA)).rejects.toThrow();
 		expectFetchNotCalled();
 	});
 
 	test('HTTPS_PROXY takes precedence over ALL_PROXY for https', async () => {
-		vi.stubEnv('HTTPS_PROXY', 'http://specific.example.com:8080');
-		vi.stubEnv('ALL_PROXY', 'http://fallback.example.com:8080');
+		vi.stubEnv('HTTPS_PROXY', 'http://127.0.0.1:9');
+		vi.stubEnv('ALL_PROXY', 'http://127.0.0.1:9');
 		await expect(fetchPage('https://example.com', DEFAULT_UA)).rejects.toThrow();
 		expectFetchNotCalled();
 	});
 
 	test('HTTPS_PROXY not used for http URLs', async () => {
-		vi.stubEnv('HTTPS_PROXY', 'http://proxy.example.com:8080');
+		vi.stubEnv('HTTPS_PROXY', 'http://127.0.0.1:9');
 		// http URL should skip HTTPS_PROXY and fall through to global fetch
 		await fetchPage('http://example.com', DEFAULT_UA);
 		expectFetchCalled();
@@ -94,7 +94,7 @@ describe('getProxyUrl — env-var precedence', () => {
 
 describe('getProxyUrl — NO_PROXY exclusions', () => {
 	beforeEach(() => {
-		vi.stubEnv('HTTPS_PROXY', 'http://proxy.example.com:8080');
+		vi.stubEnv('HTTPS_PROXY', 'http://127.0.0.1:9');
 	});
 
 	test('NO_PROXY wildcard * bypasses proxy', async () => {

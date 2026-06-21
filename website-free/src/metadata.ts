@@ -56,7 +56,7 @@ export class MetadataExtractor {
 			favicon: this.getFavicon(doc, url, metaTags),
 			image: this.getImage(doc, schemaOrgData, metaTags),
 			language: this.getLanguage(doc, schemaOrgData, metaTags),
-			published: this.getPublished(doc, schemaOrgData, metaTags),
+			published: this.getPublished(doc, schemaOrgData, metaTags, url),
 			author,
 			site,
 			schemaOrgData,
@@ -90,12 +90,18 @@ export class MetadataExtractor {
 		let authorsString: string | undefined;
 
 		// Meta tags - typically expect a single string, possibly comma-separated
-		authorsString = this.getMetaContent(metaTags, "name", "sailthru.author") ||
-			this.getMetaContent(metaTags, "property", "author") ||
-			this.getMetaContent(metaTags, "name", "author") ||
-			this.getMetaContent(metaTags, "name", "byl") ||
-			this.getMetaContent(metaTags, "name", "authorList");
-		if (authorsString && !this.isPlaceholderValue(authorsString)) return this.cleanAuthorString(authorsString);
+		authorsString = this.firstValid([
+			() => this.getMetaContent(metaTags, "name", "sailthru.author"),
+			() => this.getMetaContent(metaTags, "property", "article:author"),
+			() => this.getMetaContent(metaTags, "property", "author"),
+			() => this.getMetaContent(metaTags, "name", "author"),
+			() => this.getMetaContent(metaTags, "name", "byl"),
+			() => this.getMetaContent(metaTags, "name", "authorList"),
+		]);
+		if (authorsString) {
+			const cleaned = this.cleanAuthorString(authorsString);
+			if (cleaned) return cleaned;
+		}
 
 		// Conventions for research paper meta tags
 		let authorsStrings: string[] = this.getMetaContents(metaTags, "name", "citation_author").filter(s => !this.isPlaceholderValue(s));
@@ -132,6 +138,23 @@ export class MetadataExtractor {
 		}
 
 		// 3. DOM elements
+
+		// Short-circuit on rel="author": running before `.author` stops a container
+		// that wraps a bio from contributing bio text to the collection below.
+		const relAuthorEls = doc.querySelectorAll('a[rel~="author"], address[rel~="author"]');
+		if (relAuthorEls.length > 0 && relAuthorEls.length <= 3) {
+			const relNames: string[] = [];
+			relAuthorEls.forEach(el => {
+				const text = this.getVisibleText(el);
+				const lower = text.toLowerCase();
+				if (text && text.length < 100 && lower !== 'author' && lower !== 'authors' && !this.isPlaceholderValue(text)) {
+					relNames.push(text);
+				}
+			});
+			const uniqueRelNames = [...new Set(relNames)];
+			if (uniqueRelNames.length > 0) return uniqueRelNames.join(', ');
+		}
+
 		const collectedAuthorsFromDOM: string[] = [];
 		const addDomAuthor = (value: string | null | undefined) => {
 			if (!value) return;
@@ -156,7 +179,7 @@ export class MetadataExtractor {
 		for (const { selector, maxMatches } of domAuthorSelectors) {
 			const matches = doc.querySelectorAll(selector);
 			if (maxMatches && matches.length > maxMatches) continue;
-			matches.forEach(el => addDomAuthor(el.textContent));
+			matches.forEach(el => addDomAuthor(this.getAuthorName(el)));
 		}
 
 		if (collectedAuthorsFromDOM.length > 0) {
@@ -296,6 +319,7 @@ export class MetadataExtractor {
 			this.getMetaContent(metaTags, "name", "title"),
 			this.getMetaContent(metaTags, "name", "sailthru.title"),
 			doc.querySelector('title')?.textContent?.trim() || '',
+			doc.querySelector('h1')?.textContent?.trim() || '',
 		].filter(c => c && !this.isPlaceholderValue(c));
 
 		if (candidates.length === 0) return '';
@@ -527,32 +551,47 @@ export class MetadataExtractor {
 		return '';
 	}
 
-	private static getPublished(doc: Document, schemaOrgData: any, metaTags: MetaTagItem[]): string {
+	private static getPublished(doc: Document, schemaOrgData: any, metaTags: MetaTagItem[], url: string): string {
 		const result = this.firstValid([
 			() => this.getSchemaProperty(schemaOrgData, 'datePublished'),
 			() => this.getMetaContent(metaTags, "name", "publishDate"),
 			() => this.getMetaContent(metaTags, "property", "article:published_time"),
 			() => (doc.querySelector('abbr[itemprop="datePublished"]') as HTMLElement)?.title?.trim() || '',
-			() => this.getTimeElement(doc),
+			() => this.getTimeElement(doc, url),
 			() => this.getMetaContent(metaTags, "name", "sailthru.date"),
 		]);
 		if (result) return result;
 
-		// Look for date text near the article heading
+		// Look for date text near the article heading. Scan both directions:
+		// many layouts put the date in a byline below the <h1>, but others (e.g.
+		// openai.com) place it in a header block immediately above the title.
 		const h1 = doc.querySelector('h1');
 		if (h1) {
-			let sibling = h1.nextElementSibling;
-			for (let i = 0; i < 3 && sibling; i++) {
-				// Check individual children first — some DOMs (e.g. linkedom) omit whitespace
-				// between elements, which breaks word-boundary matching on combined text
-				for (const child of Array.from(sibling.querySelectorAll('p, time'))) {
-					const parsed = this.parseDateText(child.textContent?.trim() || '');
-					if (parsed) return parsed;
+			const scan = (start: Element | null, step: (el: Element) => Element | null, childrenOnly: boolean): string => {
+				let sibling = start;
+				for (let i = 0; i < 3 && sibling; i++) {
+					// Check individual children first — some DOMs (e.g. linkedom) omit whitespace
+					// between elements, which breaks word-boundary matching on combined text
+					for (const child of Array.from(sibling.querySelectorAll('p, time'))) {
+						const parsed = this.parseDateText(child.textContent?.trim() || '');
+						if (parsed) return parsed;
+					}
+					// Above the title, only trust dates in explicit <p>/<time> elements:
+					// header blocks there mix in breadcrumbs/categories whose loose text
+					// (e.g. "Blog | March 1, 2026") is navigation, not the article's date.
+					if (!childrenOnly) {
+						const parsed = this.parseDateText(sibling.textContent?.trim() || '');
+						if (parsed) return parsed;
+					}
+					sibling = step(sibling);
 				}
-				const parsed = this.parseDateText(sibling.textContent?.trim() || '');
-				if (parsed) return parsed;
-				sibling = sibling.nextElementSibling;
-			}
+				return '';
+			};
+			const found = this.firstValid([
+				() => scan(h1.nextElementSibling, el => el.nextElementSibling, false),
+				() => scan(h1.previousElementSibling, el => el.previousElementSibling, true),
+			]);
+			if (found) return found;
 		}
 
 		return '';
@@ -569,11 +608,38 @@ export class MetadataExtractor {
 		}).map(tag => tag.content?.trim() ?? "");
 	}
 
-	private static getTimeElement(doc: Document): string {
-		const selector = `time`;
-		const element = Array.from(doc.querySelectorAll(selector))[0];
-		const content = element ? (element.getAttribute("datetime")?.trim() ?? element.textContent?.trim() ?? "") : "";
-		return content;
+	private static getTimeElement(doc: Document, url: string): string {
+		// Skip <time> elements that belong to a link pointing at a different page —
+		// related/suggested-post cards wrap their own date in an <a>, and that date is
+		// not the current article's (see #295, openai.com blog).
+		for (const element of Array.from(doc.querySelectorAll('time'))) {
+			if (this.isLinkedToOtherPage(element, url)) continue;
+			const content = element.getAttribute("datetime")?.trim() || element.textContent?.trim() || "";
+			if (content) return content;
+		}
+		return "";
+	}
+
+	// True when `el` sits inside an <a> linking to another page on the SAME site —
+	// i.e. a related/suggested-post card whose date is not the current article's
+	// (see #295, openai.com). Links to the same page (self/permalink, in-page anchor)
+	// and links to external sites (e.g. an article date that links to its social-media
+	// thread) are kept, since those still describe the current article.
+	private static isLinkedToOtherPage(el: Element, pageUrl: string): boolean {
+		if (!pageUrl) return false;
+		const anchor = el.closest('a[href]');
+		if (!anchor) return false;
+		const href = anchor.getAttribute('href')?.trim() || '';
+		if (!href || href.startsWith('#')) return false;
+		try {
+			const target = new URL(href, pageUrl);
+			const current = new URL(pageUrl);
+			if (target.origin !== current.origin) return false; // external link — keep
+			const norm = (p: string) => p.replace(/\/+$/, '');
+			return norm(target.pathname) !== norm(current.pathname);
+		} catch {
+			return false;
+		}
 	}
 
 	private static readonly MONTH_MAP: Record<string, string> = {
@@ -600,6 +666,31 @@ export class MetadataExtractor {
 		}
 
 		return '';
+	}
+
+	private static getVisibleText(el: Element): string {
+		const clone = el.cloneNode(true) as Element;
+		clone.querySelectorAll('script, style, noscript').forEach(s => s.remove());
+		return (clone.textContent || '').replace(/\s+/g, ' ').trim();
+	}
+
+	// Author cards often wrap name + role + avatar in one element.
+	// Clone once, strip non-visible content, then prefer a short child
+	// over the full (potentially concatenated) text.
+	private static getAuthorName(el: Element): string {
+		const clone = el.cloneNode(true) as Element;
+		clone.querySelectorAll('script, style, noscript').forEach(s => s.remove());
+		const text = (clone.textContent || '').replace(/\s+/g, ' ').trim();
+		if (!text) return '';
+
+		for (const child of clone.querySelectorAll('span, a, p')) {
+			const childText = (child.textContent || '').replace(/\s+/g, ' ').trim();
+			if (childText.length >= 2 && childText.length <= 50 && childText !== text) {
+				return childText;
+			}
+		}
+
+		return text.length <= 100 ? text : '';
 	}
 
 	private static getSchemaProperty(schemaOrgData: any, property: string, defaultValue: string = ''): string {

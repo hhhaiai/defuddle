@@ -10,15 +10,15 @@ import {
 	ENTRY_POINT_ELEMENTS
 } from './constants';
 import { standardizeContent } from './standardize';
-import { standardizeFootnotes } from './elements/footnotes';
+import { standardizeFootnotes, FOOTNOTE_SECTION_RE } from './elements/footnotes';
 import { standardizeCallouts } from './elements/callouts';
 import { ContentScorer, ContentScore } from './removals/scoring';
 import { findSmallImages, removeSmallImages } from './removals/small-images';
 import { removeHiddenElements } from './removals/hidden';
 import { removeBySelector } from './removals/selectors';
-import { removeByContentPattern } from './removals/content-patterns';
+import { removeByContentPattern, removeEyebrowLabel } from './removals/content-patterns';
 import { removeMetadataBlock } from './removals/metadata-block';
-import { getComputedStyle, textPreview, countWords, isSVGElement } from './utils';
+import { getComputedStyle, textPreview, countWords } from './utils';
 import { parseHTML, serializeHTML, decodeHTMLEntities, isDangerousUrl, getClassName } from './utils/dom';
 
 interface StyleChange {
@@ -29,9 +29,14 @@ interface StyleChange {
 /** Keys from extractor variables that map to top-level DefuddleResponse fields */
 const STANDARD_VARIABLE_KEYS = new Set(['title', 'author', 'published', 'site', 'description', 'image', 'language']);
 
+// CSS-special characters that make class names invalid in selectors (Tailwind utilities like sm:pt-[131px])
+const UNSAFE_CSS_CLASS_RE = /[:\[\]()#>~+,]/;
+
 
 export class Defuddle {
-	private readonly doc: Document;
+	// Reassigned briefly during the schema.org fallback so re-extraction runs
+	// against a sanitized clone instead of the caller's live document.
+	private doc: Document;
 	private options: DefuddleOptions;
 	private debug: boolean;
 	private _schemaOrgData: any = undefined;
@@ -148,29 +153,37 @@ export class Defuddle {
 			}
 		}
 
-		// Strip dangerous elements from this.doc before any fallback paths
-		// that read from it. This must happen after parseInternal, which needs
-		// script tags for schema.org extraction, site-specific extractors, and math.
-		this._stripUnsafeElements();
-
 		// If schema.org has text content that is significantly longer than what we
 		// extracted, the scorer likely picked the wrong element from a feed page.
 		// Use a 1.5x threshold to avoid triggering when the difference is small
 		// (e.g. just related-content link text removed).
 		const schemaText = this._getSchemaText(result.schemaOrgData);
 		if (schemaText && this.countHtmlWords(schemaText) > result.wordCount * 1.5) {
-			const bestMatch = this._findElementBySchemaText(this.doc.body, schemaText);
-			if (bestMatch) {
-				// Re-run the full pipeline with the schema-identified element as the
-				// content root so it benefits from the same cleanup as normal extraction.
-				const selector = this.getElementSelector(bestMatch);
-				this._log('Schema.org suggests a better content element, retrying with selector:', selector);
-				const schemaRetry = this.parseInternal({ contentSelector: selector });
-				result = schemaRetry;
-			} else {
-				this._log('Using schema.org text as content (DOM element not found)');
-				result.content = schemaText;
-				result.wordCount = this.countHtmlWords(schemaText);
+			// Re-extract from a sanitized clone so dangerous elements and URI
+			// attributes (e.g. data:text/html in an img src) in the matched
+			// element are stripped, without mutating the caller's live document.
+			// Mobile styles / small images were cached during the first parse, so
+			// the clone (which has no window) doesn't need to be re-measured.
+			const liveDoc = this.doc;
+			const safeDoc = liveDoc.cloneNode(true) as Document;
+			this._stripUnsafeElements(safeDoc.body);
+			this.doc = safeDoc;
+			try {
+				const bestMatch = this._findElementBySchemaText(this.doc.body, schemaText);
+				if (bestMatch) {
+					// Re-run the full pipeline with the schema-identified element as the
+					// content root so it benefits from the same cleanup as normal extraction.
+					const selector = this.getElementSelector(bestMatch);
+					this._log('Schema.org suggests a better content element, retrying with selector:', selector);
+					const schemaRetry = this.parseInternal({ contentSelector: selector });
+					result = schemaRetry;
+				} else {
+					this._log('Using schema.org text as content (DOM element not found)');
+					result.content = schemaText;
+					result.wordCount = this.countHtmlWords(schemaText);
+				}
+			} finally {
+				this.doc = liveDoc;
 			}
 		}
 
@@ -207,24 +220,38 @@ export class Defuddle {
 	}
 
 	/**
-	 * Remove dangerous elements and attributes from this.doc.
-	 * Called after parseInternal so that extractors and schema extraction
-	 * can still read script tags they depend on.
+	 * Serialize the body for the fallback/error paths, where extraction found
+	 * no content and we return the whole body. Sanitizes a CLONE so the
+	 * caller's live document is never mutated — stripping elements from the
+	 * live page (e.g. its <style> blocks) would destroy its layout. The normal
+	 * extraction pipeline already removes script/style/etc. via EXACT_SELECTORS,
+	 * so only these raw-body paths need to sanitize here.
 	 */
-	private _stripUnsafeElements(): void {
-		const body = this.doc.body;
+	private _serializeFallbackBody(): string {
+		if (!this.doc.body) return '';
+		const safeBody = this.doc.body.cloneNode(true) as HTMLElement;
+		this._stripUnsafeElements(safeBody);
+		return this.resolveContentUrls(serializeHTML(safeBody));
+	}
+
+	/**
+	 * Remove dangerous elements and attributes from the given body element.
+	 */
+	private _stripUnsafeElements(body: HTMLElement | null): void {
 		if (!body) return;
 
 		// Remove dangerous elements. Iframes are kept — same-origin policy
 		// isolates them, and they're widely used for legitimate media embeds.
 		// Dangerous iframe attributes (srcdoc, javascript: src) are stripped
 		// in the attribute pass below. Math scripts are preserved for LaTeX
-		// content (matching the EXACT_SELECTORS approach).
+		// content (matching the EXACT_SELECTORS approach). SVG <style> is
+		// removed too: CSS @import / url() inside it can fetch external
+		// resources from the reader's IP. applySvgFallbackStyles in
+		// standardize.ts reconstructs basic fill/stroke from class names.
 		const dangerousElements = body.querySelectorAll(
 			'script:not([type^="math/"]), style, noscript, frame, frameset, object, embed, applet, base'
 		);
 		for (const el of dangerousElements) {
-			if (el.tagName === 'STYLE' && isSVGElement(el)) continue;
 			el.remove();
 		}
 
@@ -283,31 +310,57 @@ export class Defuddle {
 			}
 		}
 
-		// Also deduplicate adjacent images outside figures (same alt, different src)
+		// Also deduplicate images outside figures that are the same image rendered
+		// twice by lazy-load hydration: a placeholder/low-res copy *alongside* the
+		// real one. Only collapse when the two <img> are genuinely adjacent in the
+		// DOM — distinct article images separated by text are real content even when
+		// they share generic or boilerplate alt text (e.g. alt="image", or a CMS that
+		// reuses the article title as alt), so they must be kept (#286).
 		const imgs = Array.from(body.querySelectorAll('img'));
-		for (let i = 0; i < imgs.length; i++) {
+		for (let i = 0; i < imgs.length - 1; i++) {
 			const img = imgs[i];
+			if (!img.parentElement) continue; // already removed as a loser
 			if (img.closest('noscript') || img.closest('figure')) continue;
-			if (!img.parentElement) continue;
 
 			const alt = (img.getAttribute('alt') || '').trim();
 			if (!alt) continue;
 			const src = img.getAttribute('src') || '';
 			if (!src || src.startsWith('data:')) continue;
 
-			for (let j = i + 1; j < imgs.length; j++) {
-				const other = imgs[j];
-				if (other.closest('noscript') || other.closest('figure')) continue;
-				if (!other.parentElement) continue;
+			const other = imgs[i + 1];
+			if (!other.parentElement) continue;
+			if (other.closest('noscript') || other.closest('figure')) continue;
 
-				const otherAlt = (other.getAttribute('alt') || '').trim();
-				if (otherAlt !== alt) break;
-				const otherSrc = other.getAttribute('src') || '';
-				if (!otherSrc || otherSrc.startsWith('data:')) continue;
-				if (otherSrc === src) break; // legitimate repeat
+			if ((other.getAttribute('alt') || '').trim() !== alt) continue;
+			const otherSrc = other.getAttribute('src') || '';
+			if (!otherSrc || otherSrc.startsWith('data:')) continue;
+			if (otherSrc === src) continue; // legitimate repeat (same image twice)
 
-				this._keepBestImage([img, other]);
-				if (!img.parentElement) break; // img was the loser
+			// Require true adjacency: only whitespace/wrapper markup between them.
+			if (!this._noVisibleContentBetween(img, other)) continue;
+
+			this._keepBestImage([img, other]);
+		}
+
+		// Remove lightbox duplicate images: a standalone <img> whose src matches
+		// the href of a sibling <a> that already contains its own <img>.
+		// Pattern: <a href="full.jpg"><img src="thumb.jpg"></a><img src="full.jpg">
+		for (const img of Array.from(body.querySelectorAll('img'))) {
+			if (!img.parentElement) continue;
+			if (img.closest('a, figure, noscript')) continue;
+
+			const src = img.getAttribute('src') || '';
+			if (!src || src.startsWith('data:')) continue;
+
+			const parent = img.parentElement;
+			const normalizedSrc = this._normalizeSrc(src);
+			for (const link of parent.querySelectorAll(':scope > a[href]')) {
+				if (!link.querySelector('img')) continue;
+				const href = link.getAttribute('href') || '';
+				if (normalizedSrc === this._normalizeSrc(href)) {
+					img.remove();
+					break;
+				}
 			}
 		}
 	}
@@ -318,6 +371,66 @@ export class Defuddle {
 			const winner = this._pickBestImage(best, group[i]);
 			(winner === best ? group[i] : best).remove();
 			best = winner;
+		}
+	}
+
+	/**
+	 * True when nothing but whitespace and wrapper markup sits between `a` and `b`
+	 * in document order (`a` must precede `b`). Used to confirm two <img> are a
+	 * genuine lazy-load duplicate pair rather than distinct images separated by text.
+	 */
+	private _noVisibleContentBetween(a: Node, b: Node): boolean {
+		const next = (node: Node | null): Node | null => {
+			if (!node) return null;
+			if (node.firstChild) return node.firstChild;
+			let n: Node | null = node;
+			while (n) {
+				if (n.nextSibling) return n.nextSibling;
+				n = n.parentNode;
+			}
+			return null;
+		};
+		const TEXT_NODE = 3;
+		for (let node = next(a); node && node !== b; node = next(node)) {
+			if (node.nodeType === TEXT_NODE) {
+				if ((node.textContent || '').trim()) return false;
+			}
+		}
+		return true;
+	}
+
+	/** Strip protocol and query string for loose URL comparison. */
+	private _normalizeSrc(url: string): string {
+		return url.replace(/^https?:\/\//, '').split('?')[0];
+	}
+
+	/**
+	 * Remove the cover/hero image from content when it matches the page's
+	 * metadata image (og:image). The image is already captured as result.image;
+	 * keeping it inline duplicates information.
+	 * Only removes when the image is not inside a figure with a caption
+	 * (captioned figures are intentional content references).
+	 * Returns the highest-resolution URL from the image's srcset (if available)
+	 * so callers can upgrade the metadata image.
+	 */
+	private _removeCoverImage(body: Element, metadataImage: string): string | undefined {
+		if (!metadataImage) return;
+
+		const metaNorm = this._normalizeSrc(metadataImage);
+
+		for (const img of body.querySelectorAll('img')) {
+			const src = img.getAttribute('src') || '';
+			if (!src || src.startsWith('data:')) continue;
+			if (this._normalizeSrc(src) !== metaNorm) continue;
+
+			const bestUrl = this._getLargestImageSrc(img);
+
+			// Don't remove if inside a figure with a caption (intentional content use)
+			const figure = img.closest('figure');
+			if (figure && figure.querySelector('figcaption')) return bestUrl;
+
+			img.remove();
+			return bestUrl;
 		}
 	}
 
@@ -799,7 +912,7 @@ export class Defuddle {
 			});
 
 			if (!mainContent) {
-				const fallbackContent = this.doc.body ? this.resolveContentUrls(serializeHTML(this.doc.body)) : '';
+				const fallbackContent = this._serializeFallbackBody();
 				const endTime = Date.now();
 				return {
 					content: fallbackContent,
@@ -822,6 +935,13 @@ export class Defuddle {
 				mainContent!.querySelectorAll('wbr').forEach(el => el.remove());
 			});
 
+			// Pull in footnote sections that live outside the main content element
+			profileStep('adoptExternalFootnotes', () => {
+				if (options.standardize) {
+					this.adoptExternalFootnotes(mainContent!, clone);
+				}
+			});
+
 			// Standardize footnotes before cleanup (CSS sidenotes use display:none)
 			profileStep('standardizeFootnotesCallouts', () => {
 				if (options.standardize) {
@@ -841,6 +961,15 @@ export class Defuddle {
 			profileStep('removeHiddenElements', () => {
 				if (options.removeHiddenElements) {
 					removeHiddenElements(clone, this.debug, debugRemovals);
+				}
+			});
+
+			// Remove "eyebrow" category labels before selector removal — these
+			// are anchored on the first <h1>, which some sites strip via class
+			// (e.g. Substack's .post-title) in the selector phase.
+			profileStep('removeEyebrowLabel', () => {
+				if (options.removeContentPatterns && mainContent) {
+					removeEyebrowLabel(mainContent!, this.debug, debugRemovals);
 				}
 			});
 
@@ -873,7 +1002,7 @@ export class Defuddle {
 			profileStep('removeByContentPattern', () => {
 				if (options.removeContentPatterns && mainContent) {
 					const url = this.options.url || this.doc.URL || '';
-					removeByContentPattern(mainContent!, this.debug, url, debugRemovals);
+					removeByContentPattern(mainContent!, this.debug, url, metadata.title || '', metadata.description || '', debugRemovals);
 				}
 			});
 
@@ -890,6 +1019,13 @@ export class Defuddle {
 			// Remove duplicate images (same alt, different resolution)
 			// after all image processing and URL resolution is complete
 			this._deduplicateImages(mainContent!);
+
+			// Remove cover/hero image that duplicates the metadata image.
+			// If the content image has a higher-resolution srcset URL, upgrade metadata.
+			const bestCoverUrl = this._removeCoverImage(mainContent!, metadata.image || '');
+			if (bestCoverUrl) {
+				metadata.image = bestCoverUrl;
+			}
 
 			const content = mainContent.outerHTML;
 			const endTime = Date.now();
@@ -916,7 +1052,7 @@ export class Defuddle {
 			return result;
 		} catch (error) {
 			console.error('Defuddle', 'Error processing document:', error);
-			const errorContent = this.doc.body ? this.resolveContentUrls(serializeHTML(this.doc.body)) : '';
+			const errorContent = this._serializeFallbackBody();
 			const endTime = Date.now();
 			return {
 				content: errorContent,
@@ -1154,7 +1290,19 @@ export class Defuddle {
 		}
 
 		const cells = Array.from(doc.getElementsByTagName('td'));
-		return ContentScorer.findBestElement(cells);
+		const bestCell = ContentScorer.findBestElement(cells);
+		if (!bestCell) return null;
+
+		// If there's more text outside the best cell than inside it,
+		// tables are peripheral (TOC, intro boxes, data tables) — not the
+		// main content container. Fall back to body.
+		const bestCellWords = countWords(bestCell.textContent || '');
+		const bodyWords = countWords((doc.body || doc.documentElement).textContent || '');
+		if (bestCellWords * 2 < bodyWords) {
+			return null;
+		}
+
+		return bestCell;
 	}
 
 	private findContentByScoring(doc: Document): Element | null {
@@ -1173,23 +1321,46 @@ export class Defuddle {
 	private getElementSelector(element: Element): string {
 		const parts: string[] = [];
 		let current: Element | null = element;
-		
+
 		while (current && current !== this.doc.documentElement) {
 			let selector = current.tagName.toLowerCase();
 			if (current.id) {
 				selector += '#' + current.id;
 			} else if (getClassName(current)) {
-				selector += '.' + getClassName(current).trim().split(/\s+/).join('.');
+				const safe = getClassName(current).trim().split(/\s+/)
+					.filter(cls => !UNSAFE_CSS_CLASS_RE.test(cls));
+				if (safe.length) {
+					selector += '.' + safe.join('.');
+				}
 			}
 			parts.unshift(selector);
 			current = current.parentElement;
 		}
-		
+
 		return parts.join(' > ');
 	}
 
 	private getComputedStyle(element: Element): CSSStyleDeclaration | null {
 		return getComputedStyle(element);
+	}
+
+	// Move footnote sections that live outside the main content element into it.
+	private adoptExternalFootnotes(mainContent: Element, root: Document | Element): void {
+		const body = (root as any).body || root;
+		if (!body || mainContent === body) return;
+
+		body.querySelectorAll('div, section, aside').forEach((el: Element) => {
+			const className = getClassName(el);
+			const id = (el as any).id || '';
+			if (!/footnote/i.test(className) && !/footnote/i.test(id)) return;
+
+			if (mainContent.contains(el) || el.contains(mainContent)) return;
+
+			const heading = el.querySelector('h1, h2, h3, h4, h5, h6');
+			if (!heading || !FOOTNOTE_SECTION_RE.test(heading.textContent?.trim() || '')) return;
+
+			mainContent.appendChild(el);
+		});
 	}
 
 	/**

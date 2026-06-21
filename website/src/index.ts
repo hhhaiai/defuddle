@@ -49,6 +49,10 @@ type ApiKeyAuthResult =
 	| { ok: true; apiKey: string }
 	| { ok: false; response: Response };
 
+function defaultCache(): Cache {
+	return (caches as unknown as { default: Cache }).default;
+}
+
 function isLocal(url: URL): boolean {
 	return url.hostname === 'localhost' || url.hostname === '127.0.0.1';
 }
@@ -69,7 +73,7 @@ export default {
 
 			// Cache static pages at the edge
 			if (useCache && request.method === 'GET' && STATIC_PAGES.has(path)) {
-				const cache = caches.default;
+				const cache = defaultCache();
 				const cacheKey = new Request(url.toString(), request);
 				const cachedResponse = await cache.match(cacheKey);
 				if (cachedResponse) {
@@ -592,7 +596,7 @@ async function handleRequest(request: Request, url: URL, path: string, env: Env,
 
 		// Check cache before consuming a credit
 		if (cacheKey) {
-			const cachedResponse = await caches.default.match(cacheKey);
+			const cachedResponse = await defaultCache().match(cacheKey);
 			if (cachedResponse) return cachedResponse;
 		}
 
@@ -624,7 +628,7 @@ async function handleRequest(request: Request, url: URL, path: string, env: Env,
 
 		// Check cache for unauthenticated requests (after rate limit check)
 		if (cacheKey) {
-			const cachedResponse = await caches.default.match(cacheKey);
+			const cachedResponse = await defaultCache().match(cacheKey);
 			if (cachedResponse) {
 				if (env.RATE_LIMIT) {
 					ctx.waitUntil(incrementRateLimit(env.RATE_LIMIT, ip));
@@ -663,7 +667,7 @@ async function handleRequest(request: Request, url: URL, path: string, env: Env,
 		});
 
 		if (cacheKey && shouldCache) {
-			ctx.waitUntil(caches.default.put(cacheKey, response.clone()));
+			ctx.waitUntil(defaultCache().put(cacheKey, response.clone()));
 		}
 
 		// Only count IP rate limit for unauthenticated requests

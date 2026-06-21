@@ -4,6 +4,11 @@ import { escapeHtml, isDangerousUrl } from '../utils/dom';
 
 const C2_API = 'https://c2.com/wiki/remodel/pages/';
 
+interface C2WikiPage {
+	text?: string;
+	date?: string;
+}
+
 export class C2WikiExtractor extends BaseExtractor {
 	private pageTitle: string | null | undefined;
 
@@ -27,7 +32,7 @@ export class C2WikiExtractor extends BaseExtractor {
 		const title = this.getPageTitle();
 		if (!title) return { content: '', contentHtml: '' };
 
-		const json = await this.fetch(C2_API + title).then(res => res.json());
+		const json = await this.fetch(C2_API + title).then(res => res.json() as Promise<C2WikiPage>);
 		if (!json || !json.text) return { content: '', contentHtml: '' };
 
 		const words = title.replace(/([a-z])([A-Z])/g, '$1 $2');

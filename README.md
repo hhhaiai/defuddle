@@ -65,7 +65,7 @@ _Note: for `defuddle/node` to import properly, the module format in your `packag
 
 ### CLI
 
-Defuddle includes a command-line interface for parsing web pages directly from the terminal. You can run it with `npx` or [install it globally](#cli-installation).
+Defuddle includes a command-line interface for parsing web pages directly from the terminal. You can run it with `npx` or [install it globally](#cli-installation). The CLI accepts a file path, a URL, or HTML piped over stdin.
 
 ```bash
 # Parse a local HTML file
@@ -73,6 +73,12 @@ npx defuddle parse page.html
 
 # Parse a URL
 npx defuddle parse https://example.com/article
+
+# Parse HTML from stdin
+cat page.html | npx defuddle parse
+
+# Parse fetched HTML from stdin as markdown
+curl -L https://stephango.com/saw | npx defuddle parse --markdown
 
 # Output as markdown
 npx defuddle parse page.html --markdown
@@ -88,6 +94,9 @@ npx defuddle parse page.html --output result.html
 
 # Enable debug mode
 npx defuddle parse page.html --debug
+
+# Use a custom User-Agent (helps with sites that return 403 to the default UA)
+npx defuddle parse https://example.com/article --user-agent "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
 ```
 
 #### CLI Options
@@ -98,9 +107,13 @@ npx defuddle parse page.html --debug
 | `--markdown` | `-m` | Convert content to markdown format |
 | `--md` | | Alias for `--markdown` |
 | `--json` | `-j` | Output as JSON with metadata and content |
+| `--frontmatter` | `-f` | Prepend YAML frontmatter (title, author, source, etc.) to the output |
 | `--property <name>` | `-p` | Extract a specific property (e.g., title, description, domain) |
 | `--debug` | | Enable debug mode |
 | `--lang <code>` | `-l` | Preferred language (BCP 47, e.g. `en`, `fr`, `ja`) |
+| `--user-agent <string>` | `-u` | Custom `User-Agent` header for HTTP requests (helps with 403/FORBIDDEN responses) |
+
+When no `<source>` argument is provided, `defuddle parse` reads HTML from stdin. You can also pass `-` explicitly to force stdin input.
 
 ## Installation
 

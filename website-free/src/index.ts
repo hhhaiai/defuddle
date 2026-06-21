@@ -145,7 +145,7 @@ export default {
 
 			// Cache static pages at the edge
 			if (request.method === 'GET' && STATIC_PAGES.has(path)) {
-				const cache = caches.default;
+				const cache = defaultCache();
 				const cacheKey = new Request(url.toString(), request);
 				const cachedResponse = await cache.match(cacheKey);
 				if (cachedResponse) {
@@ -168,6 +168,10 @@ export default {
 } satisfies ExportedHandler<Env>;
 
 // --- Shared helpers ---
+
+function defaultCache(): Cache {
+	return (caches as unknown as { default: Cache }).default;
+}
 
 function htmlResponse(body: string): Response {
 	return new Response(body, {
@@ -316,7 +320,7 @@ async function handleRequest(request: Request, url: URL, env: Env, ctx: Executio
 	const cacheKey = new Request(cacheUrl.toString());
 
 	// Check cache
-	const cachedResponse = await caches.default.match(cacheKey);
+	const cachedResponse = await defaultCache().match(cacheKey);
 	if (cachedResponse) {
 		return cachedResponse;
 	}
@@ -348,7 +352,7 @@ async function handleRequest(request: Request, url: URL, env: Env, ctx: Executio
 					'Cache-Control': `s-maxage=${CACHE_TTL}`,
 				},
 			});
-			ctx.waitUntil(caches.default.put(cacheKey, response.clone()));
+			ctx.waitUntil(defaultCache().put(cacheKey, response.clone()));
 			return response;
 		}
 
@@ -364,7 +368,7 @@ async function handleRequest(request: Request, url: URL, env: Env, ctx: Executio
 		});
 
 		// Cache response
-		ctx.waitUntil(caches.default.put(cacheKey, response.clone()));
+		ctx.waitUntil(defaultCache().put(cacheKey, response.clone()));
 
 		return response;
 	} catch (err) {
