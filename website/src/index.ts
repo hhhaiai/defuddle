@@ -16,7 +16,7 @@ const BLOCKED_HOSTS = [PRIMARY_HOST, 'defuddle.dev', 'localhost'];
 
 const STATIC_PAGES = new Set(['/', '', '/playground', '/docs', '/terms', '/privacy', '/pricing', '/favicon.ico']);
 const CACHE_TTL = 300; // 5 minutes
-const CACHE_VERSION = '2026-06-21-x-article-sync-v1';
+const CACHE_VERSION = '2026-06-21-baidu-preview-v2';
 const MONTHLY_RATE_LIMIT = 1000;
 
 const BLOCKS: Record<string, { requests: number; price: number; name: string }> = {
@@ -29,6 +29,7 @@ type Env = {
 	RATE_LIMIT?: KVNamespace;
 	STRIPE_SECRET_KEY?: string;
 	STRIPE_WEBHOOK_SECRET?: string;
+	BAIDU_UPLOAD_ENDPOINT?: string;
 	API_KEY_BALANCES: DurableObjectNamespace;
 	CHECKOUT_FULFILLMENTS: DurableObjectNamespace;
 };
@@ -522,7 +523,7 @@ async function handleRequest(request: Request, url: URL, path: string, env: Env,
 			if (!body.url) {
 				return errorResponse('Missing "url" field.', 400);
 			}
-			const result = await uploadImageToBaidu(body.url);
+			const result = await uploadImageToBaidu(body.url, env);
 			if (!result) {
 				return errorResponse('Failed to upload image.', 502);
 			}

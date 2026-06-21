@@ -12,7 +12,7 @@ const BLOCKED_HOSTS = [...PRIMARY_HOSTS, 'defuddle.dev', 'localhost'];
 
 const STATIC_PAGES = new Set(['/', '', '/favicon.ico']);
 const CACHE_TTL = 300; // 5 minutes
-const CACHE_VERSION = '2026-06-21-x-article-sync-v1';
+const CACHE_VERSION = '2026-06-21-baidu-preview-v2';
 const RESERVED_QUERY_PARAMS = new Set(['raw', '__cb']);
 
 type Env = {
@@ -918,6 +918,7 @@ export function getMarkdownViewerPage(markdown: string, metadata: PageMetadata, 
 		const baiduUploadEndpoint = ${JSON.stringify(baiduUploadEndpoint)};
 		const retryDelaysMs = ${JSON.stringify(retryDelaysMs)};
 		const uploadTasks = new Map();
+		let uploadQueue = Promise.resolve();
 		let renderTimer = null;
 		let uploadScanTimer = null;
 
@@ -964,7 +965,7 @@ export function getMarkdownViewerPage(markdown: string, metadata: PageMetadata, 
 			let retrying = 0;
 			let completed = 0;
 			for (const task of uploadTasks.values()) {
-				if (task.status === 'uploading') uploading++;
+				if (task.status === 'queued' || task.status === 'uploading') uploading++;
 				if (task.status === 'retrying') retrying++;
 				if (task.status === 'done') completed++;
 			}
@@ -1137,7 +1138,9 @@ export function getMarkdownViewerPage(markdown: string, metadata: PageMetadata, 
 			uploadTasks.set(candidate, { status: 'retrying', attempt });
 			updateUploadStatus();
 			setTimeout(() => {
-				startUpload(candidate, resolvedUrl, attempt + 1);
+				uploadQueue = uploadQueue
+					.catch(() => {})
+					.then(() => startUpload(candidate, resolvedUrl, attempt + 1));
 			}, delay);
 		}
 
@@ -1159,14 +1162,26 @@ export function getMarkdownViewerPage(markdown: string, metadata: PageMetadata, 
 			updateUploadStatus();
 		}
 
+		function enqueueUpload(candidate, resolvedUrl, attempt = 0) {
+			const existingTask = uploadTasks.get(candidate);
+			if (existingTask?.status === 'queued' || existingTask?.status === 'uploading' || existingTask?.status === 'retrying' || existingTask?.status === 'done') {
+				return;
+			}
+			uploadTasks.set(candidate, { status: 'queued', attempt });
+			updateUploadStatus();
+			uploadQueue = uploadQueue
+				.catch(() => {})
+				.then(() => startUpload(candidate, resolvedUrl, attempt));
+		}
+
 		function scanAndStartUploads() {
 			const candidates = extractMarkdownImageCandidates(getCurrentMarkdown());
 			for (const [candidate, resolvedUrl] of candidates.entries()) {
 				const existingTask = uploadTasks.get(candidate);
-				if (existingTask?.status === 'uploading' || existingTask?.status === 'retrying' || existingTask?.status === 'done') {
+				if (existingTask?.status === 'queued' || existingTask?.status === 'uploading' || existingTask?.status === 'retrying' || existingTask?.status === 'done') {
 					continue;
 				}
-				startUpload(candidate, resolvedUrl, existingTask?.attempt || 0);
+				enqueueUpload(candidate, resolvedUrl, existingTask?.attempt || 0);
 			}
 			updateUploadStatus();
 		}

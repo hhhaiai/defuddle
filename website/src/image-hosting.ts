@@ -1,145 +1,154 @@
 /**
- * Upload image to Baidu image hosting
+ * Upload image to Baidu image hosting.
+ *
+ * This mirrors the known-good Python implementation:
+ *   token = md5(md5(picInfo) + "pic_edit" + timestamp).slice(0, 5)
+ *   timestamp = current milliseconds
+ *   payload = application/x-www-form-urlencoded
  */
 
+import { createHash } from 'node:crypto';
+
 const BAIDU_IMAGE_API = 'https://image.baidu.com/aigc/pic_upload';
-const BAIDU_REFERER = 'https://image.baidu.com/';
+const IMAGE_FETCH_ACCEPT = 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8';
 
 const USER_AGENT =
 	'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
 
-function md5(str: string): string {
-	// Simple MD5 implementation for Cloudflare Worker
-	// Using Web Crypto API via our polyfill
-	return hexMD5(str);
+export type ImageHostingEnv = {
+	BAIDU_UPLOAD_ENDPOINT?: string;
+};
+
+function generateToken(picInfo: string, timestamp: string): string {
+	const first = createHash('md5').update(picInfo).digest('hex');
+	const second = createHash('md5').update(`${first}pic_edit${timestamp}`).digest('hex');
+	return second.slice(0, 5);
 }
 
-function hexMD5(str: string): string {
-	const rotateLeft = (val: number, bits: number) => ((val << bits) | (val >>> (32 - bits))) >>> 0;
-	const add = (x: number, y: number) => {
-		const lsw = (x & 0xffff) + (y & 0xffff);
-		const msw = ((x >>> 16) + (y >>> 16) + (lsw >>> 16)) >>> 0;
-		return (msw << 16) | (lsw & 0xffff);
-	};
-	const S = [
-		7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
-		5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
-		4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
-		6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21
-	];
-	const K = new Uint32Array(64);
-	for (let i = 0; i < 64; i++) {
-		K[i] = Math.floor(Math.abs(Math.sin(i + 1)) * 0x100000000);
-	}
-
-	const msg = new TextEncoder().encode(str);
-	const ml = msg.length;
-	const newLen = Math.ceil((ml + 9) / 64) * 64;
-	const padded = new Uint8Array(newLen);
-	padded.set(msg);
-	padded[ml] = 0x80;
-	const view = new DataView(padded.buffer);
-	view.setUint32(newLen - 4, ml * 8, false);
-
-	let a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
-
-	for (let i = 0; i < newLen / 64; i++) {
-		const M = new Uint32Array(16);
-		for (let j = 0; j < 16; j++) {
-			M[j] = view.getUint32((i * 64 + j * 4), false);
-		}
-
-		let A = a0, B = b0, C = c0, D = d0;
-		for (let j = 0; j < 64; j++) {
-			let F, g;
-			if (j < 16) {
-				F = (B & C) | (~B & D);
-				g = j;
-			} else if (j < 32) {
-				F = (D & B) | (~D & C);
-				g = (5 * j + 1) % 16;
-			} else if (j < 48) {
-				F = B ^ C ^ D;
-				g = (3 * j + 5) % 16;
-			} else {
-				F = C ^ (B | ~D);
-				g = (7 * j) % 16;
-			}
-			const temp = rotateLeft((A + F + K[j] + M[g]) >>> 0, S[j]);
-			A = D;
-			D = C;
-			C = B;
-			B = (B + temp) >>> 0;
-		}
-		a0 = (a0 + A) >>> 0;
-		b0 = (b0 + B) >>> 0;
-		c0 = (c0 + C) >>> 0;
-		d0 = (d0 + D) >>> 0;
-	}
-
-	const toHex = (n: number) => {
-		const hex = n.toString(16);
-		return hex.length === 8 ? hex : '0' + hex;
-	};
-	return toHex(a0) + toHex(b0) + toHex(c0) + toHex(d0);
-}
-
-function generateToken(dataBase64: string, timestamp: string): string {
-	const s = md5(dataBase64);
-	const combined = s + 'pic_edit' + timestamp;
-	return md5(combined).slice(0, 5);
-}
-
-export async function uploadImageToBaidu(imageUrl: string): Promise<{ url: string } | null> {
+function guessMimeTypeFromUrl(imageUrl: string): string {
 	try {
-		// Fetch the image
-		const imageResponse = await fetch(imageUrl, {
-			headers: { 'User-Agent': USER_AGENT },
-			signal: AbortSignal.timeout(10000)
-		});
+		const pathname = new URL(imageUrl).pathname.toLowerCase();
+		if (pathname.endsWith('.png')) return 'image/png';
+		if (pathname.endsWith('.gif')) return 'image/gif';
+		if (pathname.endsWith('.webp')) return 'image/webp';
+		if (pathname.endsWith('.svg')) return 'image/svg+xml';
+		if (pathname.endsWith('.bmp')) return 'image/bmp';
+		return 'image/jpeg';
+	} catch {
+		return 'image/jpeg';
+	}
+}
 
+function getUploadHeaders(endpoint: string): HeadersInit {
+	const endpointUrl = new URL(endpoint);
+	const origin = endpointUrl.origin;
+
+	return {
+		'Accept': '*/*',
+		'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+		'Cache-Control': 'no-cache',
+		'Connection': 'keep-alive',
+		'Origin': origin,
+		'Pragma': 'no-cache',
+		'Referer': `${origin}/`,
+		'Sec-Fetch-Dest': 'empty',
+		'Sec-Fetch-Mode': 'cors',
+		'Sec-Fetch-Site': 'same-origin',
+		'User-Agent': USER_AGENT,
+		'sec-ch-ua': '"Chromium";v="140", "Not=A?Brand";v="24", "Google Chrome";v="140"',
+		'sec-ch-ua-mobile': '?0',
+		'sec-ch-ua-platform': '"Windows"',
+		'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+	};
+}
+
+function resolveImageUrl(imageUrl: string, pageUrl: string): string | null {
+	try {
+		return new URL(imageUrl, pageUrl).toString();
+	} catch {
+		return null;
+	}
+}
+
+function shouldUploadImage(imageUrl: string): boolean {
+	try {
+		const parsed = new URL(imageUrl);
+		if (!['http:', 'https:'].includes(parsed.protocol)) return false;
+		if (parsed.hostname.includes('baidu.com') || parsed.hostname.includes('bcebos.com')) return false;
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export async function rewriteMarkdownAssetUrlsToBaidu(markdown: string, pageUrl: string, env: ImageHostingEnv): Promise<string> {
+	if (!markdown) return markdown;
+
+	const candidates = new Set<string>();
+	for (const match of markdown.matchAll(/!\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g)) {
+		if (match[1]) candidates.add(match[1]);
+	}
+	for (const match of markdown.matchAll(/\b(?:src|poster)=["']([^"']+)["']/g)) {
+		if (match[1]) candidates.add(match[1]);
+	}
+
+	let rewritten = markdown;
+	for (const candidate of candidates) {
+		const resolvedUrl = resolveImageUrl(candidate, pageUrl);
+		if (!resolvedUrl || !shouldUploadImage(resolvedUrl)) continue;
+		const result = await uploadImageToBaidu(resolvedUrl, env);
+		if (result?.url) {
+			rewritten = rewritten.split(candidate).join(result.url);
+		}
+	}
+
+	return rewritten;
+}
+
+export async function uploadImageToBaidu(imageUrl: string, env: ImageHostingEnv = {}): Promise<{ url: string } | null> {
+	try {
+		const imageResponse = await fetch(imageUrl, {
+			headers: {
+				'Accept': IMAGE_FETCH_ACCEPT,
+				'User-Agent': USER_AGENT,
+			},
+			signal: AbortSignal.timeout(30000),
+		});
 		if (!imageResponse.ok) {
-			throw new Error(`Failed to fetch image: ${imageResponse.status}`);
+			throw new Error(`Failed to fetch image: ${imageResponse.status} ${imageResponse.statusText}`);
 		}
 
+		const contentType = imageResponse.headers.get('content-type')?.split(';')[0]?.trim() || guessMimeTypeFromUrl(imageUrl);
 		const imageBuffer = await imageResponse.arrayBuffer();
-		const imageBase64 = btoa(String.fromCharCode(...new Uint8Array(imageBuffer)));
+		const imageBase64 = Buffer.from(imageBuffer).toString('base64');
+		const picInfo = `data:${contentType};base64,${imageBase64}`;
+		const timestamp = String(Date.now());
+		const token = generateToken(picInfo, timestamp);
+		const uploadEndpoint = env.BAIDU_UPLOAD_ENDPOINT || BAIDU_IMAGE_API;
 
-		// Detect mime type from response headers or default to image/jpeg
-		const contentType = imageResponse.headers.get('content-type') || 'image/jpeg';
-		const dataBase64 = `data:${contentType};base64,${imageBase64}`;
-
-		const timestamp = String(Math.floor(Date.now() / 1000) * 1000);
-		const token = generateToken(dataBase64, timestamp);
-
-		const formData = new URLSearchParams();
-		formData.append('token', token);
-		formData.append('scene', 'pic_edit');
-		formData.append('picInfo', dataBase64);
-		formData.append('timestamp', timestamp);
-
-		const uploadResponse = await fetch(BAIDU_IMAGE_API, {
-			method: 'POST',
-			headers: {
-				'User-Agent': USER_AGENT,
-				'Referer': BAIDU_REFERER,
-				'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'
-			},
-			body: formData.toString(),
-			signal: AbortSignal.timeout(30000)
+		const payload = new URLSearchParams({
+			token,
+			scene: 'pic_edit',
+			picInfo,
+			timestamp,
 		});
 
+		const uploadResponse = await fetch(uploadEndpoint, {
+			method: 'POST',
+			headers: getUploadHeaders(uploadEndpoint),
+			body: payload.toString(),
+			signal: AbortSignal.timeout(30000),
+		});
 		if (!uploadResponse.ok) {
-			throw new Error(`Upload failed: ${uploadResponse.status}`);
+			throw new Error(`Baidu upload failed: ${uploadResponse.status} ${uploadResponse.statusText}`);
 		}
 
 		const result = await uploadResponse.json() as { data?: { url?: string } };
-
-		if (result?.data?.url) {
-			return { url: result.data.url };
+		const baiduUrl = result?.data?.url;
+		if (!baiduUrl) {
+			throw new Error(`Unexpected Baidu upload response: ${JSON.stringify(result)}`);
 		}
-
-		throw new Error('No URL in response');
+		return { url: baiduUrl };
 	} catch (error) {
 		console.error('Baidu upload error:', error);
 		return null;
